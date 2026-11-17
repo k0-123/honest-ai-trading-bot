@@ -234,22 +234,82 @@ def test_has_session_true_and_false():
     assert has_session(bars, "2024-01-06") is False
 
 
-def test_drop_spikes_removes_split_glitch_but_keeps_real_crash():
+def test_drop_spikes_removes_split_glitch():
     import pandas as _pd
 
     from nsebot.data.loader import drop_spikes
-    idx = _pd.bdate_range("2019-12-16", periods=8, name="date")
-    c = [128.0, 129.0, 12.9, 13.0, 130.0, 129.5, 129.0, 60.0]  # 2-bar glitch; last bar a real -53% crash
+    idx = _pd.bdate_range("2019-12-16", periods=7, name="date")
+    c = [128.0, 129.0, 12.9, 13.0, 130.0, 129.5, 129.0]
     df = _pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=idx)
-    out = drop_spikes(df)
-    assert list(out["close"]) == [128.0, 129.0, 130.0, 129.5, 129.0, 60.0]
+    assert list(drop_spikes(df)["close"]) == [128.0, 129.0, 130.0, 129.5, 129.0]
 
 
-def test_drop_spikes_keeps_permanent_level_shift():
+def test_drop_spikes_accepts_persistent_level_after_max_run():
     import pandas as _pd
 
     from nsebot.data.loader import drop_spikes
-    idx = _pd.bdate_range("2020-01-01", periods=6, name="date")
-    c = [100.0, 100.0, 40.0, 41.0, 40.0, 42.0]  # never reverts -> genuine, keep all
+    idx = _pd.bdate_range("2020-01-01", periods=7, name="date")
+    c = [100.0, 100.0, 40.0, 41.0, 40.0, 42.0, 43.0]  # genuine shift: accepted on the 4th bar
     df = _pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=idx)
-    assert len(drop_spikes(df)) == 6
+    assert list(drop_spikes(df)["close"]) == [100.0, 100.0, 42.0, 43.0]
+
+
+def test_drop_spikes_is_causal_prefix_invariant():
+    import numpy as _np
+    import pandas as _pd
+
+    from nsebot.data.loader import drop_spikes
+    rng = _np.random.default_rng(0)
+    c = 100 * _np.exp(_np.cumsum(rng.normal(0, 0.02, 300)))
+    c[[50, 51, 120, 200]] *= [0.1, 0.1, 3.0, 0.3]
+    idx = _pd.bdate_range("2020-01-01", periods=300, name="date")
+    df = _pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=idx)
+    full = drop_spikes(df)
+    for k in (40, 51, 52, 121, 150, 201, 299):
+        _pd.testing.assert_frame_equal(drop_spikes(df.iloc[:k]), full.loc[: idx[k - 1]], check_freq=False)
+
+
+def test_refresh_cannot_reinsert_a_spike(tmp_path):
+    import pandas as _pd
+
+    from nsebot.data.loader import PriceLoader
+    days = _pd.bdate_range("2024-01-01", periods=10)
+    closes = [100.0, 101, 300, 300, 102, 103, 104, 105, 106, 107]
+
+    def fetch(symbol, start, end):
+        d = [x for x in days if x >= _pd.Timestamp(start)]
+        cs = [closes[list(days).index(x)] for x in d]
+        return _pd.DataFrame({"Open": cs, "High": cs, "Low": cs, "Close": cs, "Volume": 1.0}, index=d)
+
+    L = PriceLoader(tmp_path, fetcher=fetch)
+    a = L.get("X.NS", "2024-01-01")
+    b = L.get("X.NS", "2024-01-01", refresh=True)
+    assert 300.0 not in set(a["close"]) and 300.0 not in set(b["close"])
+
+
+def test_spike_filter_decision_for_day_t_never_changes_when_later_bars_are_added():
+    """No-look-ahead test for fix #2, same style as the strategy invariance test: for every day t, the
+    keep/drop decision made with bars[:t+1] must equal the decision made after wild future bars
+    (spikes, crashes, reversions) are appended."""
+    import numpy as _np
+    import pandas as _pd
+
+    from nsebot.data.loader import drop_spikes
+
+    rng = _np.random.default_rng(42)
+    n = 160
+    c = 100 * _np.exp(_np.cumsum(rng.normal(0, 0.02, n)))
+    c[[20, 21, 60, 100, 101, 102, 103, 104]] *= [0.1, 0.1, 2.5, 0.3, 0.3, 0.3, 0.3, 0.3]  # glitch, spike, shift
+    idx = _pd.bdate_range("2021-01-01", periods=n + 10, name="date")
+    base = _pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0}, index=idx[:n])
+    for seed in range(3):
+        w = _np.random.default_rng(seed).choice([0.05, 0.5, 1.0, 3.0, 20.0], size=10)
+        for t in range(1, n):
+            past = base.iloc[: t + 1]
+            fut_close = past["close"].iloc[-1] * w
+            future = _pd.DataFrame({"open": fut_close, "high": fut_close, "low": fut_close, "close": fut_close,
+                                    "volume": 1.0}, index=idx[t + 1: t + 11])
+            day_t = past.index[-1]
+            kept_now = day_t in drop_spikes(past).index
+            kept_later = day_t in drop_spikes(_pd.concat([past, future])).index
+            assert kept_now == kept_later, (seed, t)

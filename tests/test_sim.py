@@ -53,15 +53,16 @@ def test_buy_fills_next_open_then_stop_out():
     assert sell["date"] == "2024-01-03" and sell["price"] == pytest.approx(96 * 0.9995)
     assert "STOP" in sell["reason"]
     assert book.positions == {}
-    # 1% risk: 1000 / (100-96) = 250 shares, 20% cap = 200 shares -> 200
-    assert buy["qty"] == 200
+    # sized at signal close: min(1000/(100-96)=250, 20% cap=200) = 200; re-checked at the real fill
+    # 102.05: 1% risk -> 1000/(102.05-96) = 165 shares
+    assert buy["qty"] == 165
     total_costs = buy["costs"] + sell["costs"]
-    expected_cash = 100_000 - 200 * buy["price"] + 200 * sell["price"] - total_costs
+    expected_cash = 100_000 - 165 * buy["price"] + 165 * sell["price"] - total_costs
     assert book.cash == pytest.approx(expected_cash, abs=0.01)
 
 
 def test_accounting_identity_holds_every_day():
-    bars = make_bars([("2024-01-0%d" % i, 100 + i, 101 + i, 99 + i, 100 + i) for i in range(1, 8)])
+    bars = make_bars([(f"2024-01-0{i}", 100 + i, 101 + i, 99 + i, 100 + i) for i in range(1, 8)])
     book = Book("t", cash=100_000)
     sim = Simulator(book, CFG, Scripted({"2024-01-01": ("BUY", 90.0), "2024-01-04": ("SELL", None)}), ["AAA.NS"])
     for d in bars.index:
@@ -93,7 +94,7 @@ def test_gap_through_stop_triggers_kill_switch_and_halts():
     script = {"2024-01-01": ("BUY", 99.0), "2024-01-03": ("BUY", 5.0), "2024-01-04": ("BUY", 5.0)}
     run(Simulator(book, CFG, Scripted(script), ["AAA.NS"]), bars)
     buy, stop = book.trades
-    assert buy["qty"] == 200
+    assert buy["qty"] == 199  # 20% cap checked at the slipped fill price: 20,000 / 100.05
     assert stop["price"] == pytest.approx(10 * 0.9995) and "STOP" in stop["reason"]
     assert book.halted and "KILL-SWITCH" in book.halt_reason
     assert len(book.trades) == 2  # no new buys after the halt
@@ -156,8 +157,68 @@ def test_book_json_roundtrip():
 
 
 def test_buy_and_hold_invests_once():
-    bars = make_bars([("2024-01-0%d" % i, 100, 101, 99, 100) for i in range(1, 5)])
+    bars = make_bars([(f"2024-01-0{i}", 100, 101, 99, 100) for i in range(1, 5)])
     book = Book("bh", cash=100_000)
     run(Simulator(book, CFG, None, ["AAA.NS"], buy_and_hold=True), bars)
     assert len(book.trades) == 1 and book.trades[0]["side"] == "BUY"
     assert book.cash >= 0 and book.cash < 2_000
+
+
+def test_gap_up_fill_respects_position_cap_and_risk():
+    # sized at close 100 / stop 99 -> 200 sh (20% cap); opens at 110 -> must shrink to <=20% and <=1% risk
+    bars = make_bars([("2024-01-01", 100, 100, 100, 100), ("2024-01-02", 110, 111, 109, 110)])
+    book = Book("t", cash=100_000)
+    run(Simulator(book, CFG, Scripted({"2024-01-01": ("BUY", 99.0)}), ["AAA.NS"]), bars)
+    t = book.trades[0]
+    assert t["qty"] * t["price"] <= 0.20 * 100_000 + 1e-6
+    assert t["qty"] * (t["price"] - 99.0) <= 0.01 * 100_000 + 1e-6
+
+
+def test_unfilled_buy_expires_after_one_session():
+    cfg = Config(symbols=["A.NS", "B.NS"])
+    a = make_bars([("2024-01-01", 100, 100, 100, 100), ("2024-01-03", 100, 100, 100, 100)])  # no bar 01-02
+    b = make_bars([("2024-01-01", 50, 50, 50, 50), ("2024-01-02", 50, 50, 50, 50), ("2024-01-03", 50, 50, 50, 50)])
+    book = Book("t", cash=100_000)
+    sim = Simulator(book, cfg, Scripted({"2024-01-01": ("BUY", 95.0)}), cfg.symbols)
+    for d in b.index:
+        today = {s: df.loc[d] for s, df in {"A.NS": a, "B.NS": b}.items() if d in df.index}
+        sim.on_open(d, today)
+        sim.on_close(d, {"A.NS": a.loc[:d], "B.NS": b.loc[:d]})
+    assert not any(t["symbol"] == "A.NS" for t in book.trades)
+
+
+def test_halted_book_places_zero_buys_sells_until_flat_then_does_nothing():
+    cfg = Config(symbols=["A.NS", "B.NS"])
+    rows = lambda px: [(f"2024-01-0{i}", px[i - 1], px[i - 1], px[i - 1], px[i - 1]) for i in range(1, 9)]
+    a = make_bars(rows([100, 100, 100, 100, 100, 100, 100, 100]))
+    b = make_bars(rows([50, 50, 50, 50, 50, 50, 50, 50]))
+
+    class AlwaysBuy:  # would buy every symbol every day if allowed
+        source = "test"
+
+        def generate(self, symbol, history, in_position):
+            d = history.index[-1]
+            stop = float(history["close"].iloc[-1]) * 0.9
+            return Signal(d, symbol, "HOLD" if in_position else "BUY", 0.6, "always buy", "test", stop=stop)
+
+    book = Book("t", cash=100_000)
+    sim = Simulator(book, cfg, AlwaysBuy(), cfg.symbols)
+    days = list(a.index)
+    for d in days[:3]:  # day1 signals, day2 fills both, day3 holds
+        sim.on_open(d, {"A.NS": a.loc[d], "B.NS": b.loc[d]})
+        sim.on_close(d, {"A.NS": a.loc[:d], "B.NS": b.loc[:d]})
+    assert set(book.positions) == {"A.NS", "B.NS"}
+    book.peak_equity = 200_000  # force the kill-switch at the next close
+    n_before = len(book.trades)
+    snapshots = []
+    for d in days[3:]:
+        sim.on_open(d, {"A.NS": a.loc[d], "B.NS": b.loc[d]})
+        sim.on_close(d, {"A.NS": a.loc[:d], "B.NS": b.loc[:d]})
+        snapshots.append((len(book.trades), dict(book.positions), list(book.pending)))
+    assert book.halted
+    after = book.trades[n_before:]
+    assert all(t["side"] == "SELL" for t in after)          # zero new BUYs once halted
+    assert sorted(t["symbol"] for t in after) == ["A.NS", "B.NS"]
+    assert book.positions == {} and book.pending == []       # flat
+    flat_from = next(i for i, s in enumerate(snapshots) if not s[1])
+    assert all(s == snapshots[flat_from] for s in snapshots[flat_from:])  # then does nothing at all

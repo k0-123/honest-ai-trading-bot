@@ -74,3 +74,38 @@ def test_splits_and_walk_forward_do_not_overlap():
         split_periods("2015-01-01", "2020-01-01", "2021-01-01", "2022-01-01")
     w = walk_forward_windows("2015-01-01", "2020-12-31", 3, 6)
     assert w and all(tr[1] < te[0] for tr, te in w)
+
+
+def test_stop_uses_raw_open_even_when_spike_filter_holds_the_bar_out():
+    """Fix #3: a genuine -60% gap is held out of the CLEANED series for up to 3 days, but the stop must fire
+    on that same day at the RAW open, not 3 days later."""
+    from nsebot.data.loader import drop_spikes
+    cfg = Config(symbols=["X.NS"])
+    idx = pd.bdate_range("2020-01-01", periods=300, name="date")
+    c = np.linspace(100, 200, 300)
+    raw = pd.DataFrame({"open": c, "high": c * 1.001, "low": c * 0.999, "close": c, "volume": 1.0}, index=idx)
+    crash = idx[290]
+    raw.loc[idx[290]:, ["open", "high", "low", "close"]] = 70.0  # permanent crash from ~197 to 70
+    clean = drop_spikes(raw)
+    assert crash not in clean.index  # the filter is holding the crash bar out
+
+    class BuyOnce:
+        source = "test"
+
+        def generate(self, symbol, history, in_position):
+            d = history.index[-1]
+            act = "BUY" if (d == idx[285] and not in_position) else "HOLD"
+            return Signal(d, symbol, act, 0.6, "t", "test", stop=float(history["close"].iloc[-1]) * 0.95)
+
+    res = run_backtest({"X.NS": clean}, BuyOnce(), cfg, str(idx[280].date()), name="b", raw_prices={"X.NS": raw})
+    sells = res.trades[res.trades.side == "SELL"]
+    assert len(sells) == 1
+    assert sells.iloc[0]["date"] == crash.strftime("%Y-%m-%d")      # same day, no 3-day delay
+    assert sells.iloc[0]["price"] == pytest.approx(70.0 * 0.9995)   # raw gap open, minus slippage
+    assert "STOP" in sells.iloc[0]["reason"]
+
+
+def test_invested_series_tracks_exposure():
+    res = run_backtest(PRICES, BaselineStrategy(CFG.baseline), CFG, "2019-01-01")
+    assert len(res.invested) == len(res.equity)
+    assert (res.invested >= 0).all() and (res.invested <= res.equity + 1e-6).all()

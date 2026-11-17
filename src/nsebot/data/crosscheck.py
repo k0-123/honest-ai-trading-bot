@@ -52,7 +52,13 @@ def jugaad_fetcher(symbol: str, start: str, end: str | None) -> pd.DataFrame:
     raw = raw.copy()
     raw.columns = [str(c).strip().lower() for c in raw.columns]
     if "date" in raw.columns:
-        raw = raw.set_index("date")
+        # jugaad-data returns IST midnight as a naive UTC timestamp (e.g. 2024-10-28 18:30 == 29 Oct IST).
+        # Interpret as UTC and convert to IST before taking the date, else every bar lands one day early.
+        d = pd.to_datetime(raw["date"])
+        if d.dt.tz is None:
+            d = d.dt.tz_localize("UTC")
+        raw.index = d.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None).dt.normalize()
+        raw = raw.drop(columns="date")
     return normalize(raw)
 
 

@@ -124,3 +124,26 @@ def test_jugaad_fetcher_end_none_defaults_to_today(monkeypatch):
     monkeypatch.setattr(jnse, "stock_df", fake_stock_df)
     jugaad_fetcher("TCS", "2024-01-01", None)
     assert isinstance(seen["to_date"], dt.date)
+
+
+def test_jugaad_utc_1830_timestamps_map_to_correct_ist_date(monkeypatch):
+    import sys
+    import types
+
+    import pandas as _pd
+
+    from nsebot.data.crosscheck import jugaad_fetcher
+
+    def fake_stock_df(symbol, from_date, to_date, series):
+        return _pd.DataFrame({
+            "DATE": _pd.to_datetime(["2024-10-28 18:30:00", "2024-10-27 18:30:00", "2024-10-24 18:30:00"]),
+            "OPEN": [1, 1, 1], "HIGH": [1, 1, 1], "LOW": [1, 1, 1], "CLOSE": [1340.0, 1334.35, 2655.7],
+            "VOLUME": [1, 1, 1]})
+
+    nse_mod = types.ModuleType("jugaad_data.nse")
+    nse_mod.stock_df = fake_stock_df
+    monkeypatch.setitem(sys.modules, "jugaad_data", types.ModuleType("jugaad_data"))
+    monkeypatch.setitem(sys.modules, "jugaad_data.nse", nse_mod)
+    df = jugaad_fetcher("RELIANCE.NS", "2024-10-24", "2024-10-29")
+    assert [d.strftime("%Y-%m-%d") for d in df.index] == ["2024-10-25", "2024-10-28", "2024-10-29"]
+    assert all(d.dayofweek < 5 for d in df.index)  # no Sunday bars

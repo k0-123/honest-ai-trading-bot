@@ -12,9 +12,9 @@ from nsebot.metrics import summarize
 
 CONTAM_BANNER = ("⚠️ CONTAMINATED: LLM results on historical dates may reflect the model's knowledge of what "
                  "happened. NOT evidence of skill.")
-TABLE_HEADER = ("| Strategy | Total return | CAGR | Sharpe | Sortino | Max DD | VaR95 | CVaR95 | Win rate | "
-                "Trades | Costs (INR) |")
-TABLE_SEP = "|" + "---|" * 11
+TABLE_HEADER = ("| Strategy | Total return | Days invested | Trades | Costs (INR) | Max DD | CAGR | Sharpe | "
+                "Sortino | VaR95 | CVaR95 | Win rate |")
+TABLE_SEP = "|" + "---|" * 12
 
 
 def _label(name: str, contaminated: bool) -> str:
@@ -53,10 +53,12 @@ def _period_table(results: dict[str, BacktestResult], title: str, period: tuple[
         eq, tr = _slice(r, period)
         # Metrics are scale-invariant, so they are computed on the sliced (not rebased) equity.
         s = summarize(eq, tr)
+        inv = r.invested.loc[eq.index.min():eq.index.max()] if len(eq) and len(r.invested) else r.invested
+        days_inv = float((inv > 0).mean()) if len(inv) else 0.0
         lines.append(
-            f"| {_label(name, r.contaminated)} | {_pct(s['total_return'])} | {_pct(s['cagr'])} | "
-            f"{s['sharpe']:.2f} | {s['sortino']:.2f} | {_pct(s['max_drawdown'])} | {_pct(s['var95'])} | "
-            f"{_pct(s['cvar95'])} | {_pct(s['win_rate'])} | {s['n_trades']} | {_inr(s['total_costs'])} |"
+            f"| {_label(name, r.contaminated)} | {_pct(s['total_return'])} | {_pct(days_inv)} | {s['n_trades']} | "
+            f"{_inr(s['total_costs'])} | {_pct(s['max_drawdown'])} | {_pct(s['cagr'])} | {s['sharpe']:.2f} | "
+            f"{s['sortino']:.2f} | {_pct(s['var95'])} | {_pct(s['cvar95'])} | {_pct(s['win_rate'])} |"
         )
     lines.append("")
     return lines

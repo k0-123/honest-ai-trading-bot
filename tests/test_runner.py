@@ -23,7 +23,7 @@ NB = frame([(250, 251, 249, 250)] * 8)
 
 
 class FakeLoader:
-    def get(self, symbol, start, end=None, as_of=None, refresh=False):
+    def get(self, symbol, start, end=None, as_of=None, refresh=False, clean=True):
         df = {"A.NS": A, "NB.NS": NB}[symbol]
         return df.loc[: pd.Timestamp(as_of)] if as_of is not None else df
 
@@ -59,7 +59,8 @@ def test_three_day_cycle_signal_fill_stop(tmp_path):
     r.run(at(DAYS[2]))                      # day 3: low 94 <= stop 96 -> stopped out
     b = r.load_books()["baseline"]
     assert b.trades[-1]["side"] == "SELL" and "STOP" in b.trades[-1]["reason"]
-    rows = list(csv.DictReader(open(tmp_path / "trades.csv")))
+    with open(tmp_path / "trades.csv") as f:
+        rows = list(csv.DictReader(f))
     assert {"date", "symbol", "side", "qty", "price", "costs", "reason", "signal_source"} <= set(rows[0])
     assert any(row["book"] == "buyhold_niftybees" for row in rows)
     assert (tmp_path / "equity.csv").exists() and (tmp_path / "signals.csv").exists()

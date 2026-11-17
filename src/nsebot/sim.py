@@ -6,6 +6,11 @@ Timeline for trading day d:
   on_close(d): mark to market at d's close, apply circuit breakers, then ask the strategy for
                signals using history up to and including d. Orders wait for the next open.
 Nothing here ever sees a bar later than d.
+
+Price inputs: on_open gets the RAW bar (fills and stops use real exchange prints immediately, even a bar the
+spike filter is still holding out); on_close gets the CLEANED history (signals and mark-to-market), so a data
+glitch cannot by itself create signals or trip the kill-switch. Trade-off: a raw glitch can still cause a
+fake stop-out; `nsebot crosscheck` is the guard for that.
 """
 from __future__ import annotations
 
@@ -58,15 +63,18 @@ class Simulator:
         self._record(date, symbol, "SELL", pos.qty, px, c, reason, source, contaminated)
 
     def _buy(self, date, order: Order, raw_price):
-        px = apply_slippage("BUY", raw_price, self.cfg.costs)
-        qty = order.qty
-        # A gap up can make the order unaffordable: shrink it to fit cash including costs.
-        while qty > 0 and qty * px + trade_costs("BUY", qty, px, self.cfg.costs).total > self.book.cash:
-            qty = min(qty - 1, int(math.floor(self.book.cash / (px * 1.002))))
-        if qty <= 0:
-            return
         if order.stop is not None and raw_price <= order.stop:
             return  # opened at/below the planned stop: entry no longer valid, skip
+        px = apply_slippage("BUY", raw_price, self.cfg.costs)
+        qty = order.qty
+        if order.stop is not None:
+            # Re-apply the 1%-risk and 20%-cap limits at the real fill price (a gap up changes both).
+            qty = min(qty, self.risk.size(self.book.equity(), self.book.cash, px, order.stop))
+        # A gap up can make the order unaffordable: shrink it to fit cash including costs.
+        while qty > 0 and qty * px + trade_costs("BUY", qty, px, self.cfg.costs).total > self.book.cash:
+            qty = min(qty - 1, math.floor(self.book.cash / (px * 1.002)))
+        if qty <= 0:
+            return
         c = trade_costs("BUY", qty, px, self.cfg.costs).total
         self.book.cash -= qty * px + c
         self.book.positions[order.symbol] = Position(order.symbol, qty, px, order.stop, _d(date), order.source)
@@ -79,7 +87,9 @@ class Simulator:
         for o in orders:
             bar = bars_today.get(o.symbol)
             if bar is None:
-                still_pending.append(o)  # symbol not traded today; try next session
+                if o.side == "SELL":
+                    still_pending.append(o)  # exits wait for the next session the symbol trades
+                # BUYs expire: an entry must fill at the very next session's open or not at all
                 continue
             if o.side == "SELL":
                 if o.symbol in self.book.positions:
@@ -106,6 +116,7 @@ class Simulator:
         prev = b.last_equity if b.last_equity > 0 else eq
         b.peak_equity = max(b.peak_equity, eq)
         b.equity_curve.append((ds, round(eq, 2)))
+        b.invested_curve.append((ds, round(eq - b.cash, 2)))
         b.last_equity, b.last_date = eq, ds
         todays: list[Signal] = []
 

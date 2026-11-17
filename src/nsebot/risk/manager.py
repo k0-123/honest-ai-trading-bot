@@ -23,7 +23,7 @@ class RiskManager:
         by_risk = (equity * self.cfg.risk_per_trade_pct) / (entry_price - stop)
         by_cap = (equity * self.cfg.max_position_pct) / entry_price
         by_cash = max(cash, 0.0) / (entry_price * (1 + _CASH_BUFFER))
-        return max(int(math.floor(min(by_risk, by_cap, by_cash))), 0)
+        return max(math.floor(min(by_risk, by_cap, by_cash)), 0)
 
     @staticmethod
     def stop_fill(stop: float, bar: pd.Series) -> float | None:

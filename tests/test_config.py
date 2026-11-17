@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -25,5 +27,5 @@ def test_rejects_absurd_risk(tmp_path):
 
 
 def test_config_has_no_secret_values():
-    text = open("config.yaml").read().lower()
+    text = Path("config.yaml").read_text().lower()
     assert "api_key:" not in text and "sk-" not in text

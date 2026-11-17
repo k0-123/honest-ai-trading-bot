@@ -73,20 +73,22 @@ def cmd_backtest(cfg: Config, args) -> int:
     end = args.end or pd.Timestamp.today().strftime("%Y-%m-%d")
     prices = {s: loader.get(s, cfg.data.start, end, refresh=args.refresh) for s in cfg.symbols}
     bench = loader.get(cfg.benchmark, cfg.data.start, end, refresh=args.refresh)
+    raw = {s: loader.get(s, cfg.data.start, end, clean=False) for s in cfg.symbols}
+    raw_bench = {cfg.benchmark: loader.get(cfg.benchmark, cfg.data.start, end, clean=False)}
     # first date where every symbol has enough history for SMA200 (warm-up is never traded)
     warm = max(df.index[min(cfg.baseline.sma_slow + 5, len(df) - 1)] for df in prices.values())
     start = max(pd.Timestamp(args.start), warm).strftime("%Y-%m-%d") if args.start else warm.strftime("%Y-%m-%d")
     strats = _strategies(cfg, with_llm=False)
     results = {
-        "baseline": run_backtest(prices, strats["baseline"], cfg, start, end, "baseline"),
+        "baseline": run_backtest(prices, strats["baseline"], cfg, start, end, "baseline", raw_prices=raw),
         "buyhold_niftybees": run_backtest({cfg.benchmark: bench}, None, cfg, start, end, "buyhold_niftybees",
-                                          buy_and_hold=True),
+                                          buy_and_hold=True, raw_prices=raw_bench),
     }
     notes = [f"Universe: {', '.join(cfg.symbols)}; capital Rs {cfg.capital:,.0f}; long-only delivery.",
              "Fills at next day's open with slippage; all Indian delivery costs deducted.",
              "Prices are yfinance split/dividend-adjusted (small known bias).",
-             "Baseline rules were changed twice AFTER seeing backtest results (logic fixes, not parameter "
-             "tuning); see README 'Strategy changes'. Treat val/test numbers as no longer pristine.",
+             ("Baseline rules were changed twice AFTER seeing backtest results (logic fixes, not parameter "
+             "tuning); see README 'Strategy changes'. Treat val/test numbers as no longer pristine."),
              "Train/val/test tables are independent runs with fresh capital; 'full' is one continuous run."]
     spend = 0.0
     if args.llm_days:
@@ -97,9 +99,9 @@ def cmd_backtest(cfg: Config, args) -> int:
         else:
             days = sorted(set().union(*[df.index for df in prices.values()]))
             llm_start = days[-args.llm_days].strftime("%Y-%m-%d")
-            results["llm (sample)"] = run_backtest(prices, llm, cfg, llm_start, end, "llm (sample)")
+            results["llm (sample)"] = run_backtest(prices, llm, cfg, llm_start, end, "llm (sample)", raw_prices=raw)
             results["baseline (same window)"] = run_backtest(prices, strats["baseline"], cfg, llm_start, end,
-                                                             "baseline (same window)")
+                                                             "baseline (same window)", raw_prices=raw)
             spend = _llm_spend(llm_dir)
             notes.append(f"LLM sample: last {args.llm_days} sessions x {len(cfg.symbols)} stocks, "
                          f"budget cap ${cfg.llm.budget_usd_total:.2f}.")
@@ -108,9 +110,9 @@ def cmd_backtest(cfg: Config, args) -> int:
     period_results = {}
     for title, (ps, pe) in periods.items():
         period_results[title] = {
-            "baseline": run_backtest(prices, strats["baseline"], cfg, ps, pe, "baseline"),
+            "baseline": run_backtest(prices, strats["baseline"], cfg, ps, pe, "baseline", raw_prices=raw),
             "buyhold_niftybees": run_backtest({cfg.benchmark: bench}, None, cfg, ps, pe, "buyhold_niftybees",
-                                              buy_and_hold=True),
+                                              buy_and_hold=True, raw_prices=raw_bench),
         }
     path = write_backtest_report(results, periods, cfg.paths.reports_dir, spend, cfg.llm.usd_inr, notes,
                                  period_results)
@@ -148,6 +150,21 @@ def cmd_crosscheck(cfg: Config, args) -> int:
     return 1 if bad else 0
 
 
+def cmd_datacheck(cfg: Config, args) -> int:
+    from nsebot.data.crosscheck import jugaad_fetcher
+    from nsebot.data.quality import audit_symbol, render, yahoo_splits
+    loader = _loader(cfg)
+    audits = []
+    for s in cfg.symbols + [cfg.benchmark]:
+        raw = loader.get(s, cfg.data.start, clean=False)
+        audits.append(audit_symbol(s, raw, yahoo_splits(s), None if args.no_nse else jugaad_fetcher))
+    out = Path(cfg.paths.reports_dir) / "data_check.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render(audits), encoding="utf-8")
+    print(out.read_text())
+    return 0
+
+
 def cmd_reset_halt(cfg: Config, args) -> int:
     from nsebot.paper.runner import PaperRunner
     if not args.confirm:
@@ -182,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("report-weekly")
     c = sub.add_parser("crosscheck", help="compare Yahoo vs NSE (jugaad-data) returns")
     c.add_argument("--days", type=int, default=90)
+    dc = sub.add_parser("datacheck", help="split/bonus + bad-bar audit for every symbol")
+    dc.add_argument("--no-nse", action="store_true")
     r = sub.add_parser("reset-halt")
     r.add_argument("--book", required=True)
     r.add_argument("--confirm", action="store_true")
@@ -192,7 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     cfg = load_config(args.config)
     return {"daily": cmd_daily, "backtest": cmd_backtest, "report-weekly": cmd_weekly,
-            "crosscheck": cmd_crosscheck, "reset-halt": cmd_reset_halt}[args.cmd](cfg, args)
+            "crosscheck": cmd_crosscheck, "datacheck": cmd_datacheck,
+            "reset-halt": cmd_reset_halt}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

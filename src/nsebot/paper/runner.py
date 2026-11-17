@@ -102,6 +102,7 @@ class PaperRunner:
         syms, bench = self.cfg.symbols, self.cfg.benchmark
         prices = {s: self.loader.get(s, self.cfg.data.start, as_of=upto, refresh=True) for s in syms + [bench]}
         prices = {s: df for s, df in prices.items() if len(df)}
+        raw = {s: self.loader.get(s, self.cfg.data.start, as_of=upto, clean=False) for s in prices}
         if not prices:
             res.message = "No price data available; nothing done."
             return res
@@ -109,7 +110,7 @@ class PaperRunner:
         for name in list(self.strategies) + [BENCH_BOOK]:
             books.setdefault(name, Book(name, cash=self.cfg.capital))
         last_done = max((pd.Timestamp(b.last_date) for b in books.values() if b.last_date), default=None)
-        days = sorted(set().union(*[df.index for s, df in prices.items() if s in syms]))
+        days = sorted(set().union(*[df.index for s, df in raw.items() if s in syms]))
         days = [d for d in days if d <= upto and (last_done is None or d > last_done)]
         if last_done is None:
             days = days[-1:]  # first ever run: start from the latest completed session only
@@ -121,7 +122,7 @@ class PaperRunner:
         sims = {name: Simulator(books[name], self.cfg, strat, syms) for name, strat in self.strategies.items()}
         sims[BENCH_BOOK] = Simulator(books[BENCH_BOOK], self.cfg, None, [bench], buy_and_hold=True)
         for d in days:
-            today = {s: df.loc[d] for s, df in prices.items() if d in df.index}
+            today = {s: df.loc[d] for s, df in raw.items() if d in df.index}  # raw: fills + stops
             hist = {s: df.loc[:d] for s, df in prices.items()}
             for name, sim in sims.items():
                 sim.on_open(d, today)

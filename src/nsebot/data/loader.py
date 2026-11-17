@@ -65,7 +65,7 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=OHLC_COLS)
     df = df[(df[OHLC_COLS] > 0).all(axis=1)]
     df["volume"] = df["volume"].fillna(0.0)
-    return drop_spikes(_finalize(df))
+    return _finalize(df)  # raw; cleaning happens causally on read (see drop_spikes)
 
 
 class PriceLoader:
@@ -100,7 +100,9 @@ class PriceLoader:
         end: str | None = None,
         as_of: str | pd.Timestamp | None = None,
         refresh: bool = False,
+        clean: bool = True,
     ) -> pd.DataFrame:
+        """clean=True: causal spike filter applied (signals). clean=False: raw bars (fills and stops)."""
         cached = self._read_cache(symbol)
         if cached is None:
             bars = self._fetch(symbol, start, end)
@@ -129,6 +131,8 @@ class PriceLoader:
             if changed:
                 self._write_cache(symbol, bars)
 
+        if clean:
+            bars = drop_spikes(bars)  # causal cleaning on the full raw history, before any slicing
         out = bars.loc[pd.Timestamp(start):]
         if end is not None:
             out = out.loc[: pd.Timestamp(end)]
@@ -140,28 +144,24 @@ class PriceLoader:
 
 
 def drop_spikes(bars: pd.DataFrame, threshold: float = 0.5, max_run: int = 3) -> pd.DataFrame:
-    """Drop short runs of bad bars: up to `max_run` closes that sit more than `threshold` away from the
-    last good close AND are followed by a close back within `threshold` of it (e.g. a split applied to
-    only two rows). Genuine moves do not revert like that, so they are kept. A suspicious bar at the very
-    end cannot be confirmed yet and is kept (the jugaad cross-check is the second line of defence)."""
-    if len(bars) < 3:
+    """CAUSAL bad-bar filter: whether bar i is kept depends only on bars <= i, so cleaning a prefix gives
+    exactly the prefix of the cleaned full series (backtest and paper mode see identical data).
+
+    A close more than `threshold` away from the last good close is held out. If the new level persists for
+    more than `max_run` consecutive bars it is accepted as genuine from then on (earlier held-out bars stay
+    out: we never revise the past). Cost: a genuine >50% one-day move is seen up to `max_run` days late."""
+    if len(bars) < 2:
         return bars
     close = bars["close"].to_numpy()
-    bad: list[int] = []
-    i, last_good = 1, close[0]
-    while i < len(close):
-        if abs(close[i] / last_good - 1) > threshold:
-            j = i
-            while j < len(close) and j - i < max_run and abs(close[j] / last_good - 1) > threshold:
-                j += 1
-            if j < len(close) and abs(close[j] / last_good - 1) <= threshold:
-                bad.extend(range(i, j))
-                i = j
-                continue
-        last_good = close[i]
-        i += 1
-    if bad:
-        dates = [bars.index[k].strftime("%Y-%m-%d") for k in bad]
-        log.warning("dropping %d bad price bar(s) that spike and revert: %s", len(bad), ", ".join(dates))
-        bars = bars.drop(bars.index[bad])
-    return bars
+    keep = [True] * len(close)
+    last_good, run = close[0], 0
+    for i in range(1, len(close)):
+        if abs(close[i] / last_good - 1) > threshold and run < max_run:
+            keep[i] = False
+            run += 1
+        else:
+            last_good, run = close[i], 0
+    if not all(keep):
+        dates = [bars.index[k].strftime("%Y-%m-%d") for k, ok in enumerate(keep) if not ok]
+        log.warning("holding out %d suspicious price bar(s): %s", len(dates), ", ".join(dates))
+    return bars[keep]
