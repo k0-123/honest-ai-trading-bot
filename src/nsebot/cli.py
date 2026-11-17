@@ -65,6 +65,47 @@ def cmd_daily(cfg: Config, args) -> int:
     return 0
 
 
+V2B_BOOK = "v2b_momentum"
+V2B_DIAG = "v2b_momentum DIAGNOSTIC (no kill-switch)"
+
+
+def _universe_loader(cfg: Config):
+    from nsebot.data.crosscheck import jugaad_fetcher
+    from nsebot.data.loader import PriceLoader
+    from nsebot.universe.nifty50 import UniversePriceLoader
+    return UniversePriceLoader(PriceLoader(cfg.data.cache_dir),
+                               PriceLoader(str(Path(cfg.data.cache_dir).parent / "prices_nse"), fetcher=jugaad_fetcher))
+
+
+def _v2b_inputs(cfg: Config, start: str, end: str, refresh: bool = False):
+    """Point-in-time Nifty 50 universe + prices for every member in [start, end] (+400 days warm-up).
+    Raises MissingPriceData rather than silently dropping a member."""
+    from nsebot.universe.nifty50 import Nifty50Universe, check_prices
+    uni, ul = Nifty50Universe(), _universe_loader(cfg)
+    data_start = (pd.Timestamp(start) - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
+    keys = sorted(uni.ever_members(start, end))
+    prices = {k: ul.get(k, data_start, end, refresh=refresh) for k in keys}
+    check_prices(uni, ul, start, end)
+    raw = {k: ul.get(k, data_start, end, clean=False) for k in keys}
+    prices[cfg.benchmark] = ul.get(cfg.benchmark, data_start, end)
+    raw[cfg.benchmark] = ul.get(cfg.benchmark, data_start, end, clean=False)
+    return uni, prices, raw
+
+
+def _run_v2b(cfg: Config, uni, prices, raw, start, end, name, kill_switch=True):
+    from nsebot.backtest.engine import run_backtest
+    from nsebot.sim_momentum import MomentumSimulator
+    from nsebot.strategies.momentum import MomentumCfg
+    holder = {}
+
+    def factory(book, all_days):
+        holder["sim"] = MomentumSimulator(book, cfg, uni, MomentumCfg(), all_days, kill_switch=kill_switch)
+        return holder["sim"]
+    res = run_backtest(prices, None, cfg, start, end, name, raw_prices=raw, sim_factory=factory)
+    res.sim = holder["sim"]
+    return res
+
+
 def cmd_backtest(cfg: Config, args) -> int:
     from nsebot.backtest.engine import run_backtest
     from nsebot.backtest.splits import split_periods
@@ -107,6 +148,16 @@ def cmd_backtest(cfg: Config, args) -> int:
                          f"budget cap ${cfg.llm.budget_usd_total:.2f}.")
     sp = cfg.backtest.splits
     periods = split_periods(start, end, sp.train_end, sp.val_end)
+    v2b = None
+    if not args.no_v2:
+        v2b = _v2b_inputs(cfg, start, end, refresh=args.refresh)
+        results[V2B_BOOK] = _run_v2b(cfg, *v2b, start, end, V2B_BOOK)
+        results[V2B_DIAG] = _run_v2b(cfg, *v2b, start, end, V2B_DIAG, kill_switch=False)
+        notes += [("v2b_momentum (strategy-v2b): point-in-time Nifty 50 (official NSE Indices changes, see "
+                  "data/nifty50/), 12-1 momentum, top 10, monthly. Momentum is a well-known historical effect, so "
+                  "a good backtest here is NOT proof it will continue. DIAGNOSTIC = same rules without the 10% "
+                  "kill-switch, to show the strategy itself; it is not a tradable book."),
+                  "HDFC Ltd, Cairn India, Tata Motors DVR and IDFC prices come from NSE (not dividend-adjusted)."]
     period_results = {}
     for title, (ps, pe) in periods.items():
         period_results[title] = {
@@ -114,6 +165,9 @@ def cmd_backtest(cfg: Config, args) -> int:
             "buyhold_niftybees": run_backtest({cfg.benchmark: bench}, None, cfg, ps, pe, "buyhold_niftybees",
                                               buy_and_hold=True, raw_prices=raw_bench),
         }
+        if v2b is not None:
+            period_results[title][V2B_BOOK] = _run_v2b(cfg, *v2b, ps, pe, V2B_BOOK)
+            period_results[title][V2B_DIAG] = _run_v2b(cfg, *v2b, ps, pe, V2B_DIAG, kill_switch=False)
     path = write_backtest_report(results, periods, cfg.paths.reports_dir, spend, cfg.llm.usd_inr, notes,
                                  period_results)
     print(f"Backtest report: {path}")
@@ -207,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--start")
     b.add_argument("--end")
     b.add_argument("--refresh", action="store_true", help="re-download recent prices")
+    b.add_argument("--no-v2", action="store_true", help="skip the v2 books (faster)")
     b.add_argument("--llm-days", type=int, default=0, help="also run a CONTAMINATED LLM sample on last N sessions")
     sub.add_parser("report-weekly")
     c = sub.add_parser("crosscheck", help="compare Yahoo vs NSE (jugaad-data) returns")

@@ -42,6 +42,7 @@ class Book:
     trades: list[dict] = field(default_factory=list)
     equity_curve: list[tuple[str, float]] = field(default_factory=list)
     invested_curve: list[tuple[str, float]] = field(default_factory=list)  # market value held at each close
+    meta: dict = field(default_factory=dict)  # strategy bookkeeping, e.g. last rebalance month (v2b)
 
     def equity(self) -> float:
         return self.cash + sum(p.qty * self.last_prices.get(s, p.entry_price) for s, p in self.positions.items())
