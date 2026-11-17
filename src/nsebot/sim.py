@@ -1,0 +1,156 @@
+"""One-day-at-a-time simulator shared by the backtest engine and the paper runner.
+
+Timeline for trading day d:
+  on_open(d):  fill orders decided at the previous close at d's OPEN (+slippage, +costs),
+               then check every position's stop against d's high/low.
+  on_close(d): mark to market at d's close, apply circuit breakers, then ask the strategy for
+               signals using history up to and including d. Orders wait for the next open.
+Nothing here ever sees a bar later than d.
+"""
+from __future__ import annotations
+
+import math
+from typing import Protocol
+
+import pandas as pd
+
+from nsebot.config import Config
+from nsebot.costs import apply_slippage, trade_costs
+from nsebot.portfolio import Book, Order, Position
+from nsebot.risk.manager import RiskManager
+from nsebot.strategies.base import Signal
+
+HISTORY_WINDOW = 400  # bars passed to strategies; identical in backtest and paper mode
+
+
+class Strategy(Protocol):
+    source: str
+
+    def generate(self, symbol: str, history: pd.DataFrame, in_position: bool) -> Signal: ...
+
+
+def _d(date) -> str:
+    return pd.Timestamp(date).strftime("%Y-%m-%d")
+
+
+class Simulator:
+    def __init__(self, book: Book, cfg: Config, strategy: Strategy | None, symbols: list[str],
+                 buy_and_hold: bool = False):
+        self.book, self.cfg, self.strategy, self.symbols = book, cfg, strategy, symbols
+        self.buy_and_hold = buy_and_hold
+        self.risk = RiskManager(cfg.risk)
+        self.signals: list[Signal] = []
+
+    # ---------- fills ----------
+    def _record(self, date, symbol, side, qty, price, costs, reason, source, contaminated=False):
+        self.book.trades.append({
+            "date": _d(date), "symbol": symbol, "side": side, "qty": int(qty), "price": round(price, 4),
+            "costs": round(costs, 4), "reason": reason, "signal_source": source,
+            "contaminated": bool(contaminated), "book": self.book.name,
+        })
+
+    def _sell(self, date, symbol, raw_price, reason, source, contaminated=False):
+        pos = self.book.positions.pop(symbol)
+        px = apply_slippage("SELL", raw_price, self.cfg.costs)
+        c = trade_costs("SELL", pos.qty, px, self.cfg.costs).total
+        self.book.cash += pos.qty * px - c
+        self.book.last_prices[symbol] = px
+        self._record(date, symbol, "SELL", pos.qty, px, c, reason, source, contaminated)
+
+    def _buy(self, date, order: Order, raw_price):
+        px = apply_slippage("BUY", raw_price, self.cfg.costs)
+        qty = order.qty
+        # A gap up can make the order unaffordable: shrink it to fit cash including costs.
+        while qty > 0 and qty * px + trade_costs("BUY", qty, px, self.cfg.costs).total > self.book.cash:
+            qty = min(qty - 1, int(math.floor(self.book.cash / (px * 1.002))))
+        if qty <= 0:
+            return
+        if order.stop is not None and raw_price <= order.stop:
+            return  # opened at/below the planned stop: entry no longer valid, skip
+        c = trade_costs("BUY", qty, px, self.cfg.costs).total
+        self.book.cash -= qty * px + c
+        self.book.positions[order.symbol] = Position(order.symbol, qty, px, order.stop, _d(date), order.source)
+        self.book.last_prices[order.symbol] = px
+        self._record(date, order.symbol, "BUY", qty, px, c, order.reason, order.source, order.contaminated)
+
+    def on_open(self, date, bars_today: dict[str, pd.Series]) -> None:
+        still_pending: list[Order] = []
+        orders = sorted(self.book.pending, key=lambda o: o.side != "SELL")  # sells free cash first
+        for o in orders:
+            bar = bars_today.get(o.symbol)
+            if bar is None:
+                still_pending.append(o)  # symbol not traded today; try next session
+                continue
+            if o.side == "SELL":
+                if o.symbol in self.book.positions:
+                    self._sell(date, o.symbol, float(bar["open"]), o.reason, o.source, o.contaminated)
+            elif o.symbol not in self.book.positions:
+                self._buy(date, o, float(bar["open"]))
+        self.book.pending = still_pending
+        for sym in list(self.book.positions):
+            pos, bar = self.book.positions[sym], bars_today.get(sym)
+            if bar is None or pos.stop is None:
+                continue
+            fill = self.risk.stop_fill(pos.stop, bar)
+            if fill is not None:
+                self._sell(date, sym, fill, f"STOP hit at {pos.stop:.2f} (bar low {bar['low']:.2f}, "
+                           f"open {bar['open']:.2f})", pos.source)
+
+    # ---------- close ----------
+    def on_close(self, date, histories: dict[str, pd.DataFrame]) -> list[Signal]:
+        b, ds = self.book, _d(date)
+        for sym, h in histories.items():
+            if len(h) and h.index[-1] == pd.Timestamp(date):
+                b.last_prices[sym] = float(h["close"].iloc[-1])
+        eq = b.equity()
+        prev = b.last_equity if b.last_equity > 0 else eq
+        b.peak_equity = max(b.peak_equity, eq)
+        b.equity_curve.append((ds, round(eq, 2)))
+        b.last_equity, b.last_date = eq, ds
+        todays: list[Signal] = []
+
+        if b.halted:
+            return todays
+        # The passive benchmark is never subject to the bot's circuit breakers.
+        if not self.buy_and_hold and self.risk.drawdown_breached(b.peak_equity, eq):
+            dd = 1 - eq / b.peak_equity
+            b.halted = True
+            b.halt_reason = f"KILL-SWITCH {ds}: drawdown {dd:.1%} >= {self.cfg.risk.max_drawdown_pct:.0%}"
+            b.pending = [Order(s, "SELL", p.qty, b.halt_reason, "risk", ds) for s, p in b.positions.items()]
+            return todays
+        b.block_new_entries = self.risk.daily_loss_breached(prev, eq)
+
+        if self.buy_and_hold:
+            if not b.positions and not b.pending and not b.trades:
+                sym = self.symbols[0]
+                px = b.last_prices.get(sym)
+                if px:
+                    qty = int(b.cash / (px * 1.01))
+                    b.pending.append(Order(sym, "BUY", qty, "Buy-and-hold benchmark: invest all cash once",
+                                           "buyhold", ds))
+            return todays
+
+        assert self.strategy is not None
+        pending_syms = {o.symbol for o in b.pending}
+        for sym in self.symbols:
+            h = histories.get(sym)
+            if h is None or not len(h) or h.index[-1] != pd.Timestamp(date):
+                continue  # no bar for this symbol today
+            sig = self.strategy.generate(sym, h.tail(HISTORY_WINDOW), sym in b.positions)
+            todays.append(sig)
+            if sym in pending_syms:
+                continue
+            if sig.action == "SELL" and sym in b.positions:
+                b.pending.append(Order(sym, "SELL", b.positions[sym].qty, sig.reason, sig.source, ds,
+                                       contaminated=sig.contaminated))
+            elif sig.action == "BUY" and sym not in b.positions:
+                if b.block_new_entries:
+                    continue
+                close = float(h["close"].iloc[-1])
+                committed = sum(o.qty * b.last_prices.get(o.symbol, 0) for o in b.pending if o.side == "BUY")
+                qty = self.risk.size(eq, b.cash - committed, close, sig.stop)
+                if qty > 0:
+                    b.pending.append(Order(sym, "BUY", qty, sig.reason, sig.source, ds, stop=sig.stop,
+                                           contaminated=sig.contaminated))
+        self.signals.extend(todays)
+        return todays
