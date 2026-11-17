@@ -1,0 +1,7 @@
+# crontab -e   (server clock in IST:)
+30 16 * * 1-5  /home/YOU/honest-ai-trading-bot/scripts/run_daily.sh
+# If the server clock is UTC, 16:30 IST = 11:00 UTC:
+# 0 11 * * 1-5  /home/YOU/honest-ai-trading-bot/scripts/run_daily.sh
+# Or keep IST explicitly (cronie / most modern cron):
+# CRON_TZ=Asia/Kolkata
+# 30 16 * * 1-5 /home/YOU/honest-ai-trading-bot/scripts/run_daily.sh

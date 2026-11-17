@@ -1,0 +1,48 @@
+# All money in INR unless stated. Every number here is configurable.
+symbols: [RELIANCE.NS, TCS.NS, HDFCBANK.NS, INFY.NS, ICICIBANK.NS]
+benchmark: NIFTYBEES.NS
+capital: 100000
+data:
+  start: "2015-01-01"
+  cache_dir: cache/prices
+costs:                      # NSE equity delivery (CNC), based on Zerodha's charges. Update when you pick a broker.
+  brokerage_pct: 0.0        # e.g. 0.0003 for 0.03%
+  brokerage_cap: 20.0       # max per order, INR
+  stt_pct: 0.001            # 0.1% on buy and sell (delivery)
+  exchange_txn_pct: 0.0000297
+  sebi_fee_pct: 0.000001    # Rs 10 per crore
+  gst_pct: 0.18             # on brokerage + exchange + SEBI
+  stamp_duty_buy_pct: 0.00015
+  dp_charge_per_sell: 15.93 # per scrip per sell day
+  slippage_pct: 0.0005      # 0.05% each side (0.05%-0.10% recommended)
+risk:
+  risk_per_trade_pct: 0.01
+  max_position_pct: 0.20
+  daily_loss_limit_pct: 0.02
+  max_drawdown_pct: 0.10
+  atr_stop_mult: 2.0
+baseline:
+  sma_fast: 50
+  sma_slow: 200
+  rsi_period: 14
+  rsi_entry: 35
+  rsi_exit: 70
+  atr_period: 14
+  exit_below_fast_days: 0   # 0 = off (see README "Strategy changes")
+llm:
+  enabled: true
+  provider: google
+  model: gemini-2.5-flash   # cheap/fast; change here only
+  api_key_env: GOOGLE_API_KEY
+  max_debate_rounds: 1
+  cache_dir: cache/llm
+  budget_usd_total: 5.0     # hard cap for the historical sample
+  budget_usd_per_day: 0.50  # cap for forward daily runs
+  usd_inr: 84.0
+  est_cost_per_call_usd: 0.05  # charged per call if token usage can't be read (keeps budget enforced)
+  price_per_mtok_usd: {input: 0.30, output: 2.50}
+backtest:
+  splits: {train_end: "2020-12-31", val_end: "2022-12-31"}   # test = after val_end
+paths:
+  state_dir: state
+  reports_dir: reports_out
