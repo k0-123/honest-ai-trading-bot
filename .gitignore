@@ -8,3 +8,4 @@ cache/
 state/
 reports_out/
 .env
+replay/

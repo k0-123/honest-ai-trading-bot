@@ -165,6 +165,18 @@ def cmd_datacheck(cfg: Config, args) -> int:
     return 0
 
 
+def cmd_replay(cfg: Config, args) -> int:
+    from nsebot.paper.replay import render, replay
+    from nsebot.reports.daily import write_daily_report
+    res = replay(cfg, _loader(cfg), args.start, args.end, args.out,
+                 report_fn=lambda r, d: write_daily_report(r, d))
+    text = render(res, cfg.capital)
+    (res.out_dir / "replay_summary.md").write_text(text, encoding="utf-8")
+    print(text)
+    print(f"Files: {res.out_dir}/state (trades.csv, equity.csv, portfolio.json), {res.out_dir}/reports/daily/")
+    return 0
+
+
 def cmd_reset_halt(cfg: Config, args) -> int:
     from nsebot.paper.runner import PaperRunner
     if not args.confirm:
@@ -201,6 +213,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--days", type=int, default=90)
     dc = sub.add_parser("datacheck", help="split/bonus + bad-bar audit for every symbol")
     dc.add_argument("--no-nse", action="store_true")
+    rp = sub.add_parser("replay", help="replay the daily paper run day by day into a separate folder")
+    rp.add_argument("--start", default="2026-10-01")
+    rp.add_argument("--end", help="default: today")
+    rp.add_argument("--out", default="replay", help="separate folder (never the real state dir)")
     r = sub.add_parser("reset-halt")
     r.add_argument("--book", required=True)
     r.add_argument("--confirm", action="store_true")
@@ -211,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     cfg = load_config(args.config)
     return {"daily": cmd_daily, "backtest": cmd_backtest, "report-weekly": cmd_weekly,
-            "crosscheck": cmd_crosscheck, "datacheck": cmd_datacheck,
+            "crosscheck": cmd_crosscheck, "datacheck": cmd_datacheck, "replay": cmd_replay,
             "reset-halt": cmd_reset_halt}[args.cmd](cfg, args)
 
 

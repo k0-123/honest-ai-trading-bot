@@ -40,6 +40,7 @@ If `GOOGLE_API_KEY` is missing, the LLM book is skipped and everything else stil
 | `nsebot daily` | **Daily paper run** (after market close). Add `--no-llm` to skip the LLM; `--weekly` forces the weekly report |
 | `nsebot backtest` | Baseline vs buy-and-hold backtest, written to `reports_out/backtest_report.md` |
 | `nsebot backtest --llm-days 20` | Also runs a small **CONTAMINATED** LLM sample on the last 20 sessions (budget-capped) |
+| `nsebot replay --start 2026-10-01` | Quick test: replays the daily paper run day by day up to today in a separate `replay/` folder (baseline + NIFTYBEES only, no AI cost), with each day seeing only data up to that day. Prints a trades table and the final book values |
 | `nsebot report-weekly` | Weekly comparison from the paper logs |
 | `nsebot crosscheck` | Compares Yahoo returns with NSE's own data (jugaad-data) |
 | `nsebot datacheck` | Split/bonus and bad-bar audit for every symbol, written to `reports_out/data_check.md` |
