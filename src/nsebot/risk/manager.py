@@ -26,13 +26,10 @@ class RiskManager:
         return max(math.floor(min(by_risk, by_cap, by_cash)), 0)
 
     @staticmethod
-    def stop_fill(stop: float, bar: pd.Series) -> float | None:
-        """Raw (pre-slippage) exit price if the day's bar hits the stop. Gaps fill at the open."""
-        if bar["open"] <= stop:
-            return float(bar["open"])
-        if bar["low"] <= stop:
-            return float(stop)
-        return None
+    def stop_breached(stop: float, bar: pd.Series) -> bool:
+        """True if the day's raw bar traded at or below the stop (intraday touch or gap below).
+        The exit itself happens at the NEXT session's open (no resting stop order in paper mode)."""
+        return bool(min(bar["low"], bar["open"]) <= stop)
 
     def daily_loss_breached(self, prev_equity: float, equity: float) -> bool:
         return prev_equity > 0 and (equity / prev_equity - 1) <= -self.cfg.daily_loss_limit_pct + _EPS

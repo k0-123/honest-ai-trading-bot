@@ -42,7 +42,8 @@ def test_buy_fills_next_open_then_stop_out():
     bars = make_bars([
         ("2024-01-01", 100, 101, 99, 100),
         ("2024-01-02", 102, 103, 101, 102),   # fill BUY at this open
-        ("2024-01-03", 101, 101, 94, 95),     # stop 96 touched -> exit at 96
+        ("2024-01-03", 101, 101, 94, 95),     # stop 96 breached intraday -> SELL queued at this close
+        ("2024-01-04", 95.5, 96, 94, 95),     # ...and filled at THIS open (no resting stop order)
     ])
     book = Book("t", cash=100_000)
     sim = Simulator(book, CFG, Scripted({"2024-01-01": ("BUY", 96.0)}), ["AAA.NS"])
@@ -50,7 +51,7 @@ def test_buy_fills_next_open_then_stop_out():
     buy, sell = book.trades
     assert buy["date"] == "2024-01-02" and buy["side"] == "BUY"
     assert buy["price"] == pytest.approx(102 * 1.0005)
-    assert sell["date"] == "2024-01-03" and sell["price"] == pytest.approx(96 * 0.9995)
+    assert sell["date"] == "2024-01-04" and sell["price"] == pytest.approx(95.5 * 0.9995)
     assert "STOP" in sell["reason"]
     assert book.positions == {}
     # sized at signal close: min(1000/(100-96)=250, 20% cap=200) = 200; re-checked at the real fill
@@ -86,16 +87,18 @@ def test_gap_through_stop_triggers_kill_switch_and_halts():
     bars = make_bars([
         ("2024-01-01", 100, 100, 100, 100),
         ("2024-01-02", 100, 100, 100, 100),      # buy 200 @ ~100
-        ("2024-01-03", 10, 12, 9, 11),           # gap far below stop -> exit at open 10; equity -18%
+        ("2024-01-03", 10, 12, 9, 11),           # gap far below stop; equity -18% at close -> kill-switch
         ("2024-01-04", 12, 13, 11, 12),
         ("2024-01-05", 12, 13, 11, 12),
     ])
     book = Book("t", cash=100_000)
     script = {"2024-01-01": ("BUY", 99.0), "2024-01-03": ("BUY", 5.0), "2024-01-04": ("BUY", 5.0)}
     run(Simulator(book, CFG, Scripted(script), ["AAA.NS"]), bars)
-    buy, stop = book.trades
+    buy, exit_ = book.trades
     assert buy["qty"] == 199  # 20% cap checked at the slipped fill price: 20,000 / 100.05
-    assert stop["price"] == pytest.approx(10 * 0.9995) and "STOP" in stop["reason"]
+    # sold at the NEXT open (01-04, open 12), not at the gap-day open: the bot only runs after close
+    assert exit_["date"] == "2024-01-04" and exit_["price"] == pytest.approx(12 * 0.9995)
+    assert "KILL-SWITCH" in exit_["reason"]
     assert book.halted and "KILL-SWITCH" in book.halt_reason
     assert len(book.trades) == 2  # no new buys after the halt
 
@@ -222,3 +225,31 @@ def test_halted_book_places_zero_buys_sells_until_flat_then_does_nothing():
     assert book.positions == {} and book.pending == []       # flat
     flat_from = next(i for i, s in enumerate(snapshots) if not s[1])
     assert all(s == snapshots[flat_from] for s in snapshots[flat_from:])  # then does nothing at all
+
+
+@pytest.mark.parametrize("day3, label", [
+    (("2024-01-03", 100, 101, 94, 99), "intraday touch"),
+    (("2024-01-03", 90, 92, 88, 91), "gap below the stop"),
+])
+def test_stop_breach_sells_at_next_open_never_at_the_stop_price(day3, label):
+    """Paper/backtest must match an after-close bot with no resting stop order: a breach on day d (raw low
+    <= stop, or a gap below it) creates a SELL that fills at day d+1's open."""
+    bars = make_bars([
+        ("2024-01-01", 100, 100, 100, 100),
+        ("2024-01-02", 100, 101, 99, 100),    # BUY fills here (stop 95)
+        day3,                                  # breach
+        ("2024-01-04", 93, 94, 92, 93),        # sold at THIS open
+    ])
+    book = Book("t", cash=100_000)
+    sim = Simulator(book, CFG, Scripted({"2024-01-01": ("BUY", 95.0)}), ["AAA.NS"])
+    for d in bars.index[:3]:
+        sim.on_open(d, {"AAA.NS": bars.loc[d]})
+        sim.on_close(d, {"AAA.NS": bars.loc[:d]})
+    assert [t["side"] for t in book.trades] == ["BUY"], label          # nothing sold on the breach day
+    assert book.pending and book.pending[0].side == "SELL" and "STOP breached" in book.pending[0].reason
+    d = bars.index[3]
+    sim.on_open(d, {"AAA.NS": bars.loc[d]})
+    sell = book.trades[-1]
+    assert sell["side"] == "SELL" and sell["date"] == "2024-01-04"
+    assert sell["price"] == pytest.approx(93 * 0.9995)                  # next open, not 95, not day-3 open
+    assert book.positions == {}

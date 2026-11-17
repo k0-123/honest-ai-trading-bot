@@ -1,8 +1,9 @@
 """One-day-at-a-time simulator shared by the backtest engine and the paper runner.
 
 Timeline for trading day d:
-  on_open(d):  fill orders decided at the previous close at d's OPEN (+slippage, +costs),
-               then check every position's stop against d's high/low.
+  on_open(d):  fill orders decided at the previous close at d's OPEN (+slippage, +costs).
+  (stops)      at d's close, a position whose stop was breached during d (raw low <= stop) gets a SELL
+               for the NEXT open: the bot runs once after close and has no resting stop order.
   on_close(d): mark to market at d's close, apply circuit breakers, then ask the strategy for
                signals using history up to and including d. Orders wait for the next open.
 Nothing here ever sees a bar later than d.
@@ -45,6 +46,7 @@ class Simulator:
         self.buy_and_hold = buy_and_hold
         self.risk = RiskManager(cfg.risk)
         self.signals: list[Signal] = []
+        self._today_raw: dict[str, pd.Series] = {}
 
     # ---------- fills ----------
     def _record(self, date, symbol, side, qty, price, costs, reason, source, contaminated=False):
@@ -97,14 +99,7 @@ class Simulator:
             elif o.symbol not in self.book.positions:
                 self._buy(date, o, float(bar["open"]))
         self.book.pending = still_pending
-        for sym in list(self.book.positions):
-            pos, bar = self.book.positions[sym], bars_today.get(sym)
-            if bar is None or pos.stop is None:
-                continue
-            fill = self.risk.stop_fill(pos.stop, bar)
-            if fill is not None:
-                self._sell(date, sym, fill, f"STOP hit at {pos.stop:.2f} (bar low {bar['low']:.2f}, "
-                           f"open {bar['open']:.2f})", pos.source)
+        self._today_raw = bars_today  # the close step checks stops against today's raw low
 
     # ---------- close ----------
     def on_close(self, date, histories: dict[str, pd.DataFrame]) -> list[Signal]:
@@ -130,6 +125,18 @@ class Simulator:
             b.pending = [Order(s, "SELL", p.qty, b.halt_reason, "risk", ds) for s, p in b.positions.items()]
             return todays
         b.block_new_entries = self.risk.daily_loss_breached(prev, eq)
+
+        # Stops: the bot runs once after the close and has no resting order at a broker, so a stop
+        # breached during day d (raw low <= stop, including a gap below it) is SOLD AT THE NEXT OPEN.
+        for sym, pos in b.positions.items():
+            bar = self._today_raw.get(sym)
+            if pos.stop is None or bar is None or not self.risk.stop_breached(pos.stop, bar):
+                continue
+            if any(o.symbol == sym and o.side == "SELL" for o in b.pending):
+                continue
+            b.pending.append(Order(sym, "SELL", pos.qty,
+                                   f"STOP breached {ds}: low {float(bar['low']):.2f} <= stop {pos.stop:.2f} "
+                                   f"(open {float(bar['open']):.2f}); sell at next open", pos.source, ds))
 
         if self.buy_and_hold:
             if not b.positions and not b.pending and not b.trades:

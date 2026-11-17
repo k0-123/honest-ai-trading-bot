@@ -77,8 +77,8 @@ def test_splits_and_walk_forward_do_not_overlap():
 
 
 def test_stop_uses_raw_open_even_when_spike_filter_holds_the_bar_out():
-    """Fix #3: a genuine -60% gap is held out of the CLEANED series for up to 3 days, but the stop must fire
-    on that same day at the RAW open, not 3 days later."""
+    """A genuine -60% gap is held out of the CLEANED series for up to 3 days, but the stop breach is detected
+    on the crash day from the RAW bar and sold at the next RAW open, not 3 days later."""
     from nsebot.data.loader import drop_spikes
     cfg = Config(symbols=["X.NS"])
     idx = pd.bdate_range("2020-01-01", periods=300, name="date")
@@ -100,8 +100,8 @@ def test_stop_uses_raw_open_even_when_spike_filter_holds_the_bar_out():
     res = run_backtest({"X.NS": clean}, BuyOnce(), cfg, str(idx[280].date()), name="b", raw_prices={"X.NS": raw})
     sells = res.trades[res.trades.side == "SELL"]
     assert len(sells) == 1
-    assert sells.iloc[0]["date"] == crash.strftime("%Y-%m-%d")      # same day, no 3-day delay
-    assert sells.iloc[0]["price"] == pytest.approx(70.0 * 0.9995)   # raw gap open, minus slippage
+    assert sells.iloc[0]["date"] == idx[291].strftime("%Y-%m-%d")    # next open after the breach day
+    assert sells.iloc[0]["price"] == pytest.approx(70.0 * 0.9995)   # raw next open, minus slippage
     assert "STOP" in sells.iloc[0]["reason"]
 
 

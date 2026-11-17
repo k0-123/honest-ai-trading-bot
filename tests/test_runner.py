@@ -56,8 +56,12 @@ def test_three_day_cycle_signal_fill_stop(tmp_path):
     r.run(at(DAYS[1]))                      # day 2 open: filled
     b = r.load_books()["baseline"]
     assert b.trades[0]["date"] == "2024-01-02" and b.trades[0]["side"] == "BUY"
-    r.run(at(DAYS[2]))                      # day 3: low 94 <= stop 96 -> stopped out
+    r.run(at(DAYS[2]))                      # day 3: low 94 <= stop 96 -> SELL queued for next open
     b = r.load_books()["baseline"]
+    assert b.trades[-1]["side"] == "BUY" and b.pending[0].side == "SELL" and "STOP" in b.pending[0].reason
+    r.run(at(DAYS[3]))                      # day 4: sold at the open
+    b = r.load_books()["baseline"]
+    assert b.trades[-1]["date"] == DAYS[3].strftime("%Y-%m-%d")
     assert b.trades[-1]["side"] == "SELL" and "STOP" in b.trades[-1]["reason"]
     with open(tmp_path / "trades.csv") as f:
         rows = list(csv.DictReader(f))

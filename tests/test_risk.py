@@ -31,16 +31,17 @@ def bar(o, h, l, c):
     return pd.Series({"open": o, "high": h, "low": l, "close": c, "volume": 1})
 
 
-def test_stop_fill_gap_down_fills_at_open():
-    assert rm.stop_fill(95, bar(90, 92, 88, 91)) == 90
+def test_stop_breached_on_gap_below():
+    assert rm.stop_breached(95, bar(90, 92, 88, 91)) is True
 
 
-def test_stop_fill_intraday_touch_fills_at_stop():
-    assert rm.stop_fill(95, bar(100, 101, 94, 99)) == 95
+def test_stop_breached_on_intraday_touch():
+    assert rm.stop_breached(95, bar(100, 101, 94, 99)) is True
+    assert rm.stop_breached(95, bar(100, 101, 95, 99)) is True   # touching the stop counts
 
 
-def test_stop_not_hit():
-    assert rm.stop_fill(95, bar(100, 101, 96, 99)) is None
+def test_stop_not_breached():
+    assert rm.stop_breached(95, bar(100, 101, 96, 99)) is False
 
 
 def test_daily_loss_limit():

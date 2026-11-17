@@ -86,6 +86,7 @@ Set `GOOGLE_API_KEY` as a *user* environment variable (System → Environment Va
 - **Costs (delivery, `config.yaml`): based on Zerodha's equity delivery charges**, chosen as a typical discount-broker reference (you don't have a broker yet). Brokerage ₹0 on delivery; STT 0.1% on buy and sell; NSE exchange fee 0.00297%; SEBI fee ₹10/crore; GST 18% on brokerage + exchange + SEBI fees; stamp duty 0.015% on buys; Zerodha DP charge ₹15.93 per scrip per sell day (₹13.50 + 18% GST); slippage 0.05% each side. STT, exchange, SEBI, GST and stamp duty are statutory and the same at every broker; brokerage and DP charges differ. **When you open an account, update `costs:` in `config.yaml` from that broker's charge sheet.**
 - **Risk rules:**
   - Each trade risks at most 1% of equity, and the stop is set when the order is placed.
+  - **Stops are checked after the close, like the real bot.** If a day's low touches or breaks the stop (including a gap below it), the position is sold at the **next session's open**. The bot runs once a day and has no order waiting at a broker, so it can't sell at the stop price itself.
   - At most 20% of equity goes into any one stock.
   - A loss of 2% or more in a day blocks new entries for the next session.
   - A drawdown of **10% or more triggers the kill-switch**: the book sells everything at the next open, `state/HALTED_<book>` is written, and the book stops until you run `reset-halt`.
@@ -119,22 +120,28 @@ Each period is an independent run starting with fresh ₹1,00,000. All figures a
 
 | Period | Strategy | Return | Days invested | Trades | Costs | Max DD |
 |---|---|---|---|---|---|---|
-| Train 2015-10 → 2020-12 | Baseline | **−10.2%** | 25.3% | 60 | ₹1,586 | 10.5% (kill-switch) |
+| Train 2015-10 → 2020-12 | Baseline | **−8.7%** | 26.0% | 58 | ₹1,552 | 10.5% (kill-switch) |
 | | NIFTYBEES buy-and-hold | +81.1% | 99.9% | 1 | ₹117 | 36.1% |
-| Val 2021 → 2022 | Baseline | +2.3% | 41.5% | 19 | ₹523 | 3.0% |
+| Val 2021 → 2022 | Baseline | +2.3% | 41.7% | 19 | ₹523 | 3.2% |
 | | NIFTYBEES buy-and-hold | +31.2% | 99.8% | 1 | ₹118 | 16.1% |
-| Test 2023 → 2026-11 | Baseline | **−4.4%** | 38.5% | 64 | ₹1,841 | 6.7% |
+| Test 2023 → 2026-11 | Baseline | **−4.2%** | 39.1% | 64 | ₹1,846 | 5.6% |
 | | NIFTYBEES buy-and-hold | +43.3% | 99.9% | 1 | ₹118 | 15.2% |
 
 **Verdict:** the baseline loses to buy-and-hold in every period. It is in the market only 25–42% of the time, wins 17–44% of its trades, and its edge before costs is roughly zero. The risk controls work. Return is the problem.
 
 ### What the kill-switch did in the train period
 
-- Equity peaked at ₹100,345 in **Oct 2016**, then drifted down for four years.
-- The COVID crash took it to a 9.8% drawdown on 6 Mar 2020, just under the 10% limit.
-- The limit was hit on **2 Nov 2020** (−10.5%). The book was already flat, so nothing needed selling.
-- It then **sat 100% in cash for the last 40 sessions to 31 Dec 2020**: equity stayed at exactly ₹89,799, with zero trades.
-- In the continuous "full" run (in `reports_out/backtest_report.md`), the same halt leaves the book in cash from Nov 2020 to Nov 2026. That's why its days-invested figure is only 11.9%, and why the per-period independent runs are the fairer view.
+- Equity peaked at ₹102,026 in **Jun 2019**, then drifted down.
+- The COVID crash hit the 10% limit on **6 Mar 2020** (−10.2%). The one open position (ICICIBANK) was sold at the next open on 9 Mar.
+- The book then **sat 100% in cash for the remaining 203 sessions to 31 Dec 2020**: equity stayed at exactly ₹91,280, with zero trades.
+- In the continuous "full" run (in `reports_out/backtest_report.md`), the same halt leaves the book in cash from Mar 2020 to Nov 2026. That's why its days-invested figure is only 12.2%, and why the per-period independent runs are the fairer view.
+
+### Stops sell at the next open (what that costs)
+
+- Across 23 stop exits in the three periods, the next open was better than the stop price 15 times and worse 8 times. On average it was 0.16% below the stop.
+- Worst case: **INFY, 23 Oct 2019**, the day after the whistleblower crash, filled **15.3% below its stop**.
+- This is the real risk of a once-a-day bot with no resting stop order. Before this change, the simulator assumed an exit at the stop price during the day, which flattered results. The train kill-switch moved from 2 Nov 2020 back to 6 Mar 2020.
+- Live trading could fix this with broker GTT stop orders (see section 7).
 
 ### Data check (`nsebot datacheck`, all 5 stocks + NIFTYBEES)
 
@@ -153,7 +160,7 @@ Each period is an independent run starting with fresh ₹1,00,000. All figures a
 ### How prices are used
 
 - **Signals and mark-to-market** use the cleaned series. The spike filter is *causal*: whether a bar is kept depends only on that bar and earlier ones, and a test checks this.
-- **Fills and stop checks** use the **raw** open, high and low, so a real crash triggers the stop the same day.
+- **Fills and stop checks** use the **raw** open and low. A real crash is detected on the day it happens (even while the spike filter is holding that bar out) and sold at the next raw open.
 - **Trade-off:** a data glitch in the raw feed could cause a fake stop-out. `nsebot crosscheck` is the guard against that.
 
 ### Strategy freeze
@@ -175,6 +182,7 @@ The baseline rules were changed **twice after seeing backtest output**. These we
 - Fills and stops use raw prices.
 - A BUY that can't fill at the next session's open expires.
 - These moved the train kill-switch from 6 Mar 2020 to 2 Nov 2020, and changed returns by under 0.5 percentage points.
+- **Later engine change:** stop breaches now sell at the next open instead of at the stop price during the day (described above). This moved the train kill-switch back to 6 Mar 2020. Train went from −10.2% to −8.7% and test from −4.4% to −4.2%.
 
 **Halting is per book.** A halted book places no new BUYs and only sells until flat (tested). Other books keep running.
 
@@ -185,11 +193,12 @@ Not run yet (needs `GOOGLE_API_KEY`). Any LLM backtest on historical dates is **
 ## 7. Not included (on purpose)
 
 - **Live trading.** Under SEBI's retail algo framework (in force from April 2026), retail algo orders need a **broker-approved API, a registered static IP and an exchange Algo-ID**. Nothing here places real orders. Ask explicitly before any live work starts.
+  - **Stops in live trading could use broker GTT (Good Till Triggered) stop-loss orders**, placed with the broker right after each entry. The stop would then trigger at the exchange during market hours instead of waiting for the next open. Paper mode deliberately does *not* assume this, because nothing like it exists here yet.
 - News and FinBERT sentiment are planned for later.
 
 ## 8. Known limitations
 
-- Daily bars only. Stops are simulated against the next day's high/low (gaps fill at the open).
+- Daily bars only. A stop breach is detected from the day's low after the close and sold at the next open, so overnight gaps and crash days can fill well below the stop.
 - yfinance is unofficial; it can break, revise data or have gaps.
 - Survivorship bias: today's large caps were chosen with hindsight.
 - TradingAgents is US-centric (its data tools target US markets). Its NSE analysis quality is unproven.
