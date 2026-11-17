@@ -42,6 +42,7 @@ If `GOOGLE_API_KEY` is missing, the LLM book is skipped and everything else stil
 | `nsebot backtest --llm-days 20` | Also runs a small **CONTAMINATED** LLM sample on the last 20 sessions (budget-capped) |
 | `nsebot report-weekly` | Weekly comparison from the paper logs |
 | `nsebot crosscheck` | Compares Yahoo returns with NSE's own data (jugaad-data) |
+| `nsebot datacheck` | Split/bonus and bad-bar audit for every symbol, written to `reports_out/data_check.md` |
 | `nsebot reset-halt --book baseline --confirm` | Restarts a book after the kill-switch has halted it |
 | `nsebot live` | Explains why live trading is not built (SEBI rules) |
 
@@ -111,25 +112,70 @@ Set `GOOGLE_API_KEY` as a *user* environment variable (System → Environment Va
 
 The weekly report shows "Insufficient data" until there are at least 20 sessions. Meaningful conclusions need **months** of forward data.
 
-## 6. Backtest results (baseline, real data, Oct 2015 – Nov 2026)
+## 6. Backtest results (frozen `strategy-v1`, real data, Oct 2015 – Nov 2026)
 
-These are independent runs with fresh capital in each period. All figures are net of costs and slippage.
+Each period is an independent run starting with fresh ₹1,00,000. All figures are net of costs and slippage. "Days invested" is the share of sessions with any open position.
 
-| Period | Baseline | Max DD | Trades | Buy-and-hold NIFTYBEES | Max DD |
-|---|---|---|---|---|---|
-| Train 2015-10 → 2020-12 | **−10.2%** (kill-switch on 2020-03-06) | 10.6% | 58 | +81.1% | 36.1% |
-| Val 2021 → 2022 | +1.9% | 3.4% | 19 | +31.2% | 16.1% |
-| Test 2023 → 2026-11 | **−4.3%** | 6.8% | 64 | +43.3% | 15.2% |
+| Period | Strategy | Return | Days invested | Trades | Costs | Max DD |
+|---|---|---|---|---|---|---|
+| Train 2015-10 → 2020-12 | Baseline | **−10.2%** | 25.3% | 60 | ₹1,586 | 10.5% (kill-switch) |
+| | NIFTYBEES buy-and-hold | +81.1% | 99.9% | 1 | ₹117 | 36.1% |
+| Val 2021 → 2022 | Baseline | +2.3% | 41.5% | 19 | ₹523 | 3.0% |
+| | NIFTYBEES buy-and-hold | +31.2% | 99.8% | 1 | ₹118 | 16.1% |
+| Test 2023 → 2026-11 | Baseline | **−4.4%** | 38.5% | 64 | ₹1,841 | 6.7% |
+| | NIFTYBEES buy-and-hold | +43.3% | 99.9% | 1 | ₹118 | 15.2% |
 
-**Verdict:** the baseline is low-risk but clearly loses to buy-and-hold. It sits in cash most of the time, and its win rate is low (17–44%). The drawdown control works as designed: the kill-switch caught the COVID crash.
+**Verdict:** the baseline loses to buy-and-hold in every period. It is in the market only 25–42% of the time, wins 17–44% of its trades, and its edge before costs is roughly zero. The risk controls work. Return is the problem.
 
-### Strategy changes (full disclosure)
+### What the kill-switch did in the train period
 
-The baseline rules were changed **twice after seeing backtest output**. These were logic fixes, not parameter tuning, but they mean the val/test numbers are **no longer pristine out-of-sample evidence**:
+- Equity peaked at ₹100,345 in **Oct 2016**, then drifted down for four years.
+- The COVID crash took it to a 9.8% drawdown on 6 Mar 2020, just under the 10% limit.
+- The limit was hit on **2 Nov 2020** (−10.5%). The book was already flat, so nothing needed selling.
+- It then **sat 100% in cash for the last 40 sessions to 31 Dec 2020**: equity stayed at exactly ₹89,799, with zero trades.
+- In the continuous "full" run (in `reports_out/backtest_report.md`), the same halt leaves the book in cash from Nov 2020 to Nov 2026. That's why its days-invested figure is only 11.9%, and why the per-period independent runs are the fairer view.
+
+### Data check (`nsebot datacheck`, all 5 stocks + NIFTYBEES)
+
+- **Splits and bonuses Yahoo has on record since 2015:**
+  - RELIANCE 2017 and 2024 (1:1)
+  - TCS 2018
+  - HDFCBANK 2019 (split) and 2025 (bonus)
+  - INFY 2015 and 2018
+  - ICICIBANK 2017 (1:10 bonus)
+- **Adjusted prices are clean around every event.** The largest move within ±3 sessions is 8.9% (HDFCBANK, Sep 2019, the corporate tax-cut rally, a real move).
+- **Compared against NSE's own (unadjusted) prices,** each event shows **exactly one** return mismatch, on the event day itself, as expected. Two extra ~1.1% differences on HDFCBANK in Sep 2019 come from how each source defines the closing price.
+- **Moves over 15%:** INFY 22 Oct 2019 (−16.2%, whistleblower news) and ICICIBANK 23 Mar 2020 (−17.8%, COVID). Both are real.
+- **Only bad data found:** two NIFTYBEES rows (19–20 Dec 2019) in pre-split units. The spike filter holds them out.
+- **Bug found by this check:** jugaad-data returns IST dates as UTC 18:30 of the previous day, which shifted every NSE bar one day early. Fixed and covered by a regression test.
+
+### How prices are used
+
+- **Signals and mark-to-market** use the cleaned series. The spike filter is *causal*: whether a bar is kept depends only on that bar and earlier ones, and a test checks this.
+- **Fills and stop checks** use the **raw** open, high and low, so a real crash triggers the stop the same day.
+- **Trade-off:** a data glitch in the raw feed could cause a fake stop-out. `nsebot crosscheck` is the guard against that.
+
+### Strategy freeze
+
+The rules were frozen at git tag **`strategy-v1`**. `tests/test_frozen_strategy.py` fails if the strategy code or its rule/risk parameters change. Any future change needs a new version tag and a disclosure here.
+
+### Strategy changes before the freeze (full disclosure)
+
+The baseline rules were changed **twice after seeing backtest output**. These were logic fixes, not parameter tuning, but they mean the val/test numbers are **not pristine out-of-sample evidence**:
 
 1. **v0 (as planned):** exit after 2 closes below SMA50. This caused buy-today/sell-tomorrow churn. Before the first backtest it was changed to 5 closes plus a falling SMA50.
-2. **v0.1** (5 closes): **−4.6%** over the full period, 170 trades. Gross P&L before costs was only +₹156, so costs (₹4,774) caused the whole loss. Cause: the entry and exit rules overlapped. Fix: never BUY on a bar where the SELL rule would fire.
-3. **v1 (current):** RSI dips almost always sit under a flattening SMA50, so the SMA50 exit is **off by default** (`exit_below_fast_days: 0`). Exits are now RSI > 70, close < SMA200, or the stop.
+2. **v0.1** (5 closes): **−4.6%** over the full period, 170 trades. Gross P&L before costs was +₹156, so costs (₹4,774) caused the whole loss. Fix: never BUY on a bar where the SELL rule would fire.
+3. **v1 (frozen):** the SMA50 exit is off (`exit_below_fast_days: 0`). Exits are RSI > 70, close < SMA200, or the 2×ATR stop.
+
+### Engine fixes from code review (no rule changes)
+
+- The 1% risk and 20% cap are now re-checked at the actual fill price.
+- The spike filter was made causal, and the cache now stores raw data.
+- Fills and stops use raw prices.
+- A BUY that can't fill at the next session's open expires.
+- These moved the train kill-switch from 6 Mar 2020 to 2 Nov 2020, and changed returns by under 0.5 percentage points.
+
+**Halting is per book.** A halted book places no new BUYs and only sells until flat (tested). Other books keep running.
 
 ### LLM backtest
 
