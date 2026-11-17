@@ -5,7 +5,7 @@ capital: 100000
 data:
   start: "2015-01-01"
   cache_dir: cache/prices
-costs:                      # NSE equity delivery (CNC). Verify against your broker.
+costs:                      # NSE equity delivery (CNC), based on Zerodha's charges. Update when you pick a broker.
   brokerage_pct: 0.0        # e.g. 0.0003 for 0.03%
   brokerage_cap: 20.0       # max per order, INR
   stt_pct: 0.001            # 0.1% on buy and sell (delivery)

@@ -82,7 +82,7 @@ Set `GOOGLE_API_KEY` as a *user* environment variable (System → Environment Va
 
 - **No look-ahead.** A decision at day *t*'s close uses only bars up to *t*, and the order fills at day *t+1*'s **open** with slippage. Tests check that adding future data never changes a past signal or a past backtest result.
 - **The backtest and the paper bot use the same simulator** (`src/nsebot/sim.py`), so they can't drift apart.
-- **Costs (delivery, `config.yaml`):** brokerage (default ₹0, the usual delivery rate at discount brokers), STT 0.1% on buy and sell, NSE exchange fee 0.00297%, SEBI fee ₹10/crore, GST 18% on brokerage + exchange + SEBI fees, stamp duty 0.015% on buys, DP charge ₹15.93 per sell, slippage 0.05% each side. **Check these against your broker's current charge sheet.**
+- **Costs (delivery, `config.yaml`): based on Zerodha's equity delivery charges**, chosen as a typical discount-broker reference (you don't have a broker yet). Brokerage ₹0 on delivery; STT 0.1% on buy and sell; NSE exchange fee 0.00297%; SEBI fee ₹10/crore; GST 18% on brokerage + exchange + SEBI fees; stamp duty 0.015% on buys; Zerodha DP charge ₹15.93 per scrip per sell day (₹13.50 + 18% GST); slippage 0.05% each side. STT, exchange, SEBI, GST and stamp duty are statutory and the same at every broker; brokerage and DP charges differ. **When you open an account, update `costs:` in `config.yaml` from that broker's charge sheet.**
 - **Risk rules:**
   - Each trade risks at most 1% of equity, and the stop is set when the order is placed.
   - At most 20% of equity goes into any one stock.
