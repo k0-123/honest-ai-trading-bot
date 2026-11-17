@@ -175,7 +175,8 @@ def test_universe_price_loader_routes_nse_sourced_keys_to_nse_loader():
     loader.get("HDFC.NS", "2015-01-01", "2016-01-01", clean=False)
     loader.get("RELIANCE.NS", "2015-01-01", "2016-01-01")
     assert nse.calls == [("HDFC.NS", "2015-01-01", "2016-01-01", None, False, False)]
-    assert yahoo.calls == [("RELIANCE.NS", "2015-01-01", "2016-01-01", None, False, True)]
+    # the inner loader is always asked for RAW bars: adjustments are applied, then the spike filter
+    assert yahoo.calls == [("RELIANCE.NS", "2015-01-01", "2016-01-01", None, False, False)]
 
 
 def test_universe_price_loader_routes_every_nse_sourced_key_to_nse(uni):
@@ -268,3 +269,21 @@ def test_check_prices_reports_every_offending_key(uni):
     with pytest.raises(MissingPriceData) as exc:
         check_prices(uni, _FakeLoader(cov), "2015-10-01", "2026-11-16")
     assert "HDFC.NS" in str(exc.value) and "LTM.NS" in str(exc.value)
+
+
+def test_universe_price_loader_applies_documented_adjustments_then_cleans():
+    idx = pd.bdate_range("2025-10-08", periods=4, name="date")
+    c = pd.Series([655.0, 655.0, 392.0, 393.0], index=idx)
+    raw = pd.DataFrame({"open": c, "high": c, "low": c, "close": c, "volume": 1.0})
+
+    class L:
+        def get(self, symbol, start, end=None, as_of=None, refresh=False, clean=True):
+            return raw if as_of is None else raw.loc[: pd.Timestamp(as_of)]
+
+    adj = pd.DataFrame([{"key": "TMPV.NS", "date": idx[2], "factor": 392.0 / 655.0, "kind": "demerger",
+                         "evidence": "test fixture"}])
+    up = UniversePriceLoader(L(), L(), adjustments=adj)
+    out = up.get("TMPV.NS", "2025-10-01")
+    assert out.close.pct_change().abs().max() < 0.01                    # demerger gap removed
+    early = up.get("TMPV.NS", "2025-10-01", as_of=idx[1])               # paper mode before the ex-date
+    assert list(early.close) == [655.0, 655.0]                          # correction not applied yet

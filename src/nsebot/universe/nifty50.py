@@ -108,13 +108,31 @@ class Nifty50Universe:
 class UniversePriceLoader:
     """Same ``.get()`` signature as PriceLoader; routes NSE_SOURCED keys to the NSE loader, others to Yahoo."""
 
-    def __init__(self, yahoo_loader, nse_loader):
+    def __init__(self, yahoo_loader, nse_loader, adjustments: pd.DataFrame | None = None,
+                 overrides: pd.DataFrame | None = None):
+        from nsebot.universe.adjustments import load_adjustments, load_bar_overrides
         self.yahoo_loader = yahoo_loader
         self.nse_loader = nse_loader
+        self.adjustments = load_adjustments() if adjustments is None else adjustments
+        self.overrides = load_bar_overrides() if overrides is None else overrides
 
     def get(self, symbol, start, end=None, as_of=None, refresh=False, clean=True) -> pd.DataFrame:
+        """Raw bars -> documented corporate-action corrections (data/nifty50/adjustments.csv) -> causal spike
+        filter. With as_of (paper mode) only corrections dated on/before as_of are applied."""
+        from nsebot.data.loader import drop_spikes
+        from nsebot.universe.adjustments import apply_adjustments, apply_bar_overrides
         loader = self.nse_loader if symbol in NSE_SOURCED else self.yahoo_loader
-        return loader.get(symbol, start, end, as_of=as_of, refresh=refresh, clean=clean)
+        df = loader.get(symbol, start, end, as_of=as_of, refresh=refresh, clean=False)
+        adj = self.adjustments
+        if as_of is not None and len(adj):
+            adj = adj[adj["date"] <= pd.Timestamp(as_of)]
+        if symbol not in NSE_SOURCED:
+            ov = self.overrides
+            if as_of is not None and len(ov):
+                ov = ov[ov["date"] <= pd.Timestamp(as_of)]
+            df = apply_bar_overrides(df, symbol, ov)   # stale/bad Yahoo bars -> NSE's real bar
+        df = apply_adjustments(df, symbol, adj)
+        return drop_spikes(df) if clean else df
 
 
 def check_prices(universe: Nifty50Universe, loader, start: str, end: str, tolerance_days: int = 7) -> None:
