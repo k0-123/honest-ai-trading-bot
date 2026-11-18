@@ -154,7 +154,10 @@ class PaperRunner:
             today = {s: df.loc[d] for s, df in raw.items() if d in df.index}  # raw: fills + stops
             hist = {s: df.loc[:d] for s, df in prices.items()}
             for name, sim in sims.items():
-                sim.on_open(d, today)
+                if sim.book.last_date is None:
+                    sim._today_raw = today        # first session: the bot did not exist at this open -> no fills
+                else:
+                    sim.on_open(d, today)
                 for sg in sim.on_close(d, hist):
                     res.signals.append({"date": d.strftime("%Y-%m-%d"), "book": name, "symbol": sg.symbol,
                                         "action": sg.action, "confidence": round(sg.confidence, 3),
@@ -164,7 +167,10 @@ class PaperRunner:
                 utoday = {k: df.loc[d] for k, df in uraw.items() if d in df.index}
                 uhist = {k: df.loc[:d] for k, df in uprices.items()}
                 for name, sim in usims.items():
-                    sim.on_open(d, utoday)
+                    if sim.book.last_date is None:
+                        sim._today_raw = utoday   # first session: the bot did not exist at this open -> no fills
+                    else:
+                        sim.on_open(d, utoday)
                     for sg in sim.on_close(d, uhist):
                         res.signals.append({"date": d.strftime("%Y-%m-%d"), "book": name, "symbol": sg.symbol,
                                             "action": sg.action, "confidence": round(sg.confidence, 3),

@@ -47,6 +47,12 @@ If `GOOGLE_API_KEY` is missing, the LLM book is skipped and everything else stil
 | `nsebot reset-halt --book baseline --confirm` | Restarts a book after the kill-switch has halted it |
 | `nsebot live` | Explains why live trading is not built (SEBI rules) |
 
+### Run it automatically on GitHub Actions
+
+See **[docs/github_actions.md](docs/github_actions.md)**. The workflow runs `nsebot daily` at 4:30 PM IST every weekday and commits state and reports back. It fails (so GitHub emails you) if a run fails or a book is HALTED. The AI book stays off for the first 5 runs.
+
+A book's **first** session only records the close: the bot didn't exist at that morning's open, so it makes no fills that day. v2a parks its cash at the next open.
+
 ### One-line daily run
 
 ```bash

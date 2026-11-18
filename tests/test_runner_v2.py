@@ -100,3 +100,16 @@ def test_replay_includes_v2_books_and_never_refreshes_in_loop(tmp_path):
     in_loop = [c for c in L.calls if c[1] is not None]
     assert in_loop and not any(c[2] for c in in_loop)
     assert all(c[3] <= pd.Timestamp(c[1]) for c in in_loop if c[3] is not None)
+
+
+def test_new_book_makes_no_fill_on_its_first_session(tmp_path):
+    """The bot runs after the close, so on a book's first session it cannot have traded at that morning's open:
+    v2a parks its cash at the NEXT open, not the open of the day it was created."""
+    L = Loader()
+    r = runner(tmp_path, L)
+    r.run(at("2026-01-28"))
+    v2a = r.load_books()["v2a_parking"]
+    assert v2a.trades == [] and v2a.cash == 100_000
+    r.run(at("2026-01-29"))
+    v2a = r.load_books()["v2a_parking"]
+    assert v2a.trades and v2a.trades[0]["date"] == "2026-01-29" and v2a.trades[0]["symbol"] == BENCH
