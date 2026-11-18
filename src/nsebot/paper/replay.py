@@ -4,7 +4,7 @@
   as_of cut-off means it only sees data up to and including that day.
 - Prices are downloaded ONCE up front; daily steps never refresh (no network inside the loop).
 - Writes to a separate folder (default ./replay) and refuses to touch the real paper state.
-- Baseline + NIFTYBEES books only: no LLM, no API cost.
+- Books: baseline (v1), NIFTYBEES buy-and-hold, and (unless --no-v2) v2a_parking and v2b_momentum. No LLM, no API cost.
 """
 from __future__ import annotations
 
@@ -46,7 +46,8 @@ def _check_separate(out: Path, real_state: Path) -> None:
 
 
 def replay(cfg: Config, loader, start: str, end: str | None = None, out_dir: str | Path = "replay",
-           refresh_data: bool = True, report_fn=None) -> ReplayResult:
+           refresh_data: bool = True, report_fn=None, universe=None, universe_loader=None,
+           universe_books: dict | None = None) -> ReplayResult:
     out = Path(out_dir)
     _check_separate(out, Path(cfg.paths.state_dir))
     state, reports = out / "state", out / "reports"
@@ -61,11 +62,17 @@ def replay(cfg: Config, loader, start: str, end: str | None = None, out_dir: str
         for s in syms + [cfg.benchmark]:
             loader.get(s, cfg.data.start, refresh=True)
     end_ts = pd.Timestamp(end) if end else pd.Timestamp(datetime.now(IST).date())
+    if universe_books and refresh_data:
+        ustart = (pd.Timestamp(start) - pd.Timedelta(days=600)).strftime("%Y-%m-%d")
+        for k in sorted(set(universe.ever_members(start, end_ts)) | {cfg.benchmark}):
+            universe_loader.get(k, ustart, refresh=True)
     all_days = sorted(set().union(*[loader.get(s, cfg.data.start, clean=False).index for s in syms]))
     days = [d for d in all_days if pd.Timestamp(start) <= d <= end_ts]
 
     runner = PaperRunner(rcfg, _NoRefresh(loader),
-                         {"baseline": BaselineStrategy(cfg.baseline, cfg.risk.atr_stop_mult)}, state)
+                         {"baseline": BaselineStrategy(cfg.baseline, cfg.risk.atr_stop_mult)}, state,
+                         universe=universe, universe_loader=_NoRefresh(universe_loader) if universe_loader else None,
+                         universe_books=universe_books)
     done: list[str] = []
     for d in days:
         res = runner.run(now=datetime.combine(d.date(), time(16, 30), tzinfo=IST))

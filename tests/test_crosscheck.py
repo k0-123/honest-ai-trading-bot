@@ -147,3 +147,31 @@ def test_jugaad_utc_1830_timestamps_map_to_correct_ist_date(monkeypatch):
     df = jugaad_fetcher("RELIANCE.NS", "2024-10-24", "2024-10-29")
     assert [d.strftime("%Y-%m-%d") for d in df.index] == ["2024-10-25", "2024-10-28", "2024-10-29"]
     assert all(d.dayofweek < 5 for d in df.index)  # no Sunday bars
+
+
+def test_jugaad_fetcher_drops_non_eq_series_rows(monkeypatch):
+    """NSE mixes other series (e.g. HDFC warrants 'W2') into the EQ request; they must not reach the bars.
+
+    The W2 rows are placed AFTER the EQ rows on the same dates, so without the filter normalize()'s
+    keep-last-per-date would pick them and the closes would be wrong."""
+
+    def fake_stock_df(symbol, from_date, to_date, series="EQ"):
+        return pd.DataFrame(
+            {
+                "DATE": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"]),
+                "SERIES": ["EQ", "EQ", "W2", "W2"],
+                "OPEN": [10.0, 11.0, 500.0, 600.0],
+                "HIGH": [11.0, 12.0, 500.0, 600.0],
+                "LOW": [9.0, 10.0, 500.0, 600.0],
+                "CLOSE": [10.5, 11.5, 500.0, 600.0],
+                "VOLUME": [100, 200, 5, 5],
+            }
+        )
+
+    monkeypatch.setattr(jnse, "stock_df", fake_stock_df)
+    bars = jugaad_fetcher("HDFC.NS", "2024-01-01", "2024-01-31")
+
+    assert bars["close"].tolist() == pytest.approx([10.5, 11.5])
+    assert bars["volume"].tolist() == pytest.approx([100.0, 200.0])
+    assert bars.index.is_unique
+    assert len(bars) == 2
