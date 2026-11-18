@@ -31,6 +31,16 @@ TRADE_COLS = ["date", "symbol", "side", "qty", "price", "costs", "reason", "sign
 BENCH_BOOK = "buyhold_niftybees"
 
 
+def holiday_warning(cfg: Config, now: datetime | None = None) -> str | None:
+    """Warn when config.nse_holidays has no entry for the current year (v2b month-end detection and holiday
+    skipping then rely on the data feed alone)."""
+    year = str((now or datetime.now(IST)).year)
+    if any(h.startswith(year) for h in cfg.nse_holidays):
+        return None
+    return (f"WARNING: config.yaml nse_holidays has no {year} dates. Add NSE's official {year} trading-holiday list "
+            "(see data/nse_holidays/ and README).")
+
+
 def effective_date(now: datetime | None = None) -> pd.Timestamp:
     """Last date whose daily bar is complete."""
     now = (now or datetime.now(IST)).astimezone(IST)
@@ -116,7 +126,9 @@ class PaperRunner:
             books.setdefault(name, Book(name, cash=self.cfg.capital))
         last_done = max((pd.Timestamp(b.last_date) for b in books.values() if b.last_date), default=None)
         days = sorted(set().union(*[df.index for s, df in raw.items() if s in syms]))
-        days = [d for d in days if d <= upto and (last_done is None or d > last_done)]
+        holidays = {pd.Timestamp(h) for h in self.cfg.nse_holidays}
+        # an NSE holiday is never a session, even if the feed shows a (phantom, zero-volume) bar for it
+        days = [d for d in days if d <= upto and d not in holidays and (last_done is None or d > last_done)]
         if last_done is None:
             days = days[-1:]  # first ever run: start from the latest completed session only
         if not days:

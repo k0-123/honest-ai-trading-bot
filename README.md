@@ -166,7 +166,8 @@ Each period is an independent run starting with fresh ₹1,00,000. All figures a
 ### v2 books in the daily run
 
 - The v2a and v2b books trade the point-in-time Nifty 50, with corrected prices for current members and anything held, loaded up to the run date only. Their state lives in the same `state/portfolio.json`.
-- **Keep `nse_holidays` in `config.yaml` up to date** from NSE's published holiday calendar. In live paper mode tomorrow's bar doesn't exist yet, so v2b uses this list to recognise the last session of a month. If a month end is missed, v2b rebalances one session late and logs a warning.
+- **`nse_holidays` in `config.yaml`** holds NSE's official 2026 equity trading holidays (the source response is saved in `data/nse_holidays/`). **NSE had not published its 2027 list on 2026-11-18**; add it when NSE releases it, usually in December. `nsebot daily` prints a warning when the current year has no holidays listed. The paper runner never treats a listed holiday as a session: Yahoo showed a zero-volume phantom bar on the 15 Jan 2026 holiday.
+- Keep the list up to date In live paper mode tomorrow's bar doesn't exist yet, so v2b uses this list to recognise the last session of a month. If a month end is missed, v2b rebalances one session late and logs a warning.
 - **Small-capital limit:** with ₹1L, a v2b slot is about ₹10,000, so a stock priced above that per share (e.g. Maruti at about ₹14,450) gets 0 shares and is never bought. This comes from whole-share sizing, not from a rule change.
 
 ### Strategy freeze

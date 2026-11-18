@@ -47,9 +47,12 @@ def _strategies(cfg: Config, with_llm: bool, llm_cache_dir: str | None = None) -
 
 
 def cmd_daily(cfg: Config, args) -> int:
-    from nsebot.paper.runner import PaperRunner
+    from nsebot.paper.runner import PaperRunner, holiday_warning
     from nsebot.reports.daily import write_daily_report
     from nsebot.reports.weekly import write_weekly_report
+    warn = holiday_warning(cfg)
+    if warn:
+        print(warn)
     kw = {}
     if not args.no_v2:
         from nsebot.paper.books import v2_universe_books
