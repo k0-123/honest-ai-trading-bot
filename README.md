@@ -269,6 +269,48 @@ A separate ₹1,00,000 paper book (`v2b_momentum`). v1 is unchanged and keeps ru
 - **Result:** all 6 runs (3 periods × with/without kill-switch) match **exactly**: identical trades, identical returns, costs within ₹0.01.
 - **Limit:** it can't catch a spec misreading shared by both implementations, or errors in the shared data (that's what the audit is for).
 
+## 6c. Strategy v2a: v1 rules + NIFTYBEES parking (frozen at tag `strategy-v2a`)
+
+A separate ₹1,00,000 paper book (`v2a_parking`) on the same point-in-time Nifty 50 universe as v2b.
+
+**Rules (fixed before the first v2a backtest; commit `07fa413`):**
+- **Signals:** the frozen strategy-v1 rules, unchanged. Entries only for stocks in the Nifty 50 on that date. A held stock that leaves the index keeps its v1 exits and stop; one whose data ends (merger) is sold at its last close.
+- **Idle cash is held in NIFTYBEES.** At each open: stock sells first, then just enough NIFTYBEES is sold to fund the stock buys, then the stocks are bought, then any idle cash above a ₹1,000 buffer goes back into NIFTYBEES (including proceeds from sales and stop-outs).
+- **Sizing:** 1% risk per trade and a 20% cap per stock, with equity including NIFTYBEES. NIFTYBEES has no stop.
+- **Risk and costs:** the same as v1, including the 10% kill-switch, which sells everything including NIFTYBEES and then stays in cash. DIAGNOSTIC runs remove only the kill-switch.
+
+### All strategies side by side (net of costs; a fresh ₹1L in each period; corrected data for v2)
+
+| Period | Book | Return | Days invested | Trades | Costs | Max DD |
+|---|---|---|---|---|---|---|
+| Train 2015-10 → 2020-12 | v1 baseline | −8.72% | 26.0% | 58 | ₹1,552 | 10.5% |
+| | v2a parking | −11.15% (kill-switch 2016-02-10) | 5.5% | 19 | ₹597 | 11.2% |
+| | v2a DIAGNOSTIC | +33.16% | 100% | 821 | ₹20,334 | 40.1% |
+| | v2b momentum | +3.57% (kill-switch 2016-12-20) | 11.6% | 64 | ₹1,223 | 10.2% |
+| | v2b DIAGNOSTIC | +14.45% | 81.6% | 292 | ₹5,711 | 25.8% |
+| | NIFTYBEES buy-and-hold | **+81.09%** | 99.9% | 1 | ₹117 | 36.1% |
+| Val 2021 → 2022 | v1 baseline | +2.32% | 41.7% | 19 | ₹523 | 3.2% |
+| | v2a parking | +26.32% (kill-switch 2021-11-29) | 45.2% | 172 | ₹4,146 | 10.4% |
+| | v2a DIAGNOSTIC | **+43.36%** | 100% | 357 | ₹9,382 | 13.5% |
+| | v2b momentum | +31.83% (kill-switch 2021-11-22) | 40.1% | 44 | ₹854 | 10.7% |
+| | v2b DIAGNOSTIC | +22.95% | 96.0% | 89 | ₹1,669 | 25.0% |
+| | NIFTYBEES buy-and-hold | +31.20% | 99.8% | 1 | ₹118 | 16.1% |
+| Test 2023 → 2026-11 | v1 baseline | −4.16% | 39.1% | 64 | ₹1,846 | 5.6% |
+| | v2a parking | −10.43% (kill-switch 2023-03-15) | 5.3% | 62 | ₹1,599 | 10.6% |
+| | v2a DIAGNOSTIC | +0.71% | 100% | 758 | ₹19,407 | 31.9% |
+| | v2b momentum | +37.54% (kill-switch 2024-06-04) | 34.5% | 78 | ₹1,471 | 10.5% |
+| | v2b DIAGNOSTIC | +23.75% | 83.9% | 160 | ₹3,165 | 24.1% |
+| | NIFTYBEES buy-and-hold | **+43.31%** | 99.9% | 1 | ₹118 | 15.2% |
+
+**Verdict on v2a:**
+- **The kill-switch stops it early in every period** (Feb 2016, Nov 2021, Mar 2023), because v1's whipsaws plus a falling NIFTYBEES reach −10% quickly.
+- **Without the kill-switch it is mixed.** Train +33% vs +81% for NIFTYBEES; val +43% vs +31%; test +0.7% vs +43%. It also has a *deeper* drawdown than the index (40% vs 36% in train).
+- **Costs are heavy:** ₹65,260 over the full 2015–2026 DIAGNOSTIC run, because every v1 entry and exit adds a NIFTYBEES sale or buy-back with its own STT and DP charge.
+
+**Overall:**
+- **No strategy beats buy-and-hold NIFTYBEES across the periods.** v2b and v2a each come out ahead in val only (v2b with the kill-switch, v2a without it).
+- These are backtests, and momentum and trend rules are well-known, widely published ideas. **Only forward paper trading counts as evidence.**
+
 ## 7. Not included (on purpose)
 
 - **Live trading.** Under SEBI's retail algo framework (in force from April 2026), retail algo orders need a **broker-approved API, a registered static IP and an exchange Algo-ID**. Nothing here places real orders. Ask explicitly before any live work starts.

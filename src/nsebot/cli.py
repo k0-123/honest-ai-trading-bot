@@ -65,6 +65,8 @@ def cmd_daily(cfg: Config, args) -> int:
     return 0
 
 
+V2A_BOOK = "v2a_parking"
+V2A_DIAG = "v2a_parking DIAGNOSTIC (no kill-switch)"
 V2B_BOOK = "v2b_momentum"
 V2B_DIAG = "v2b_momentum DIAGNOSTIC (no kill-switch)"
 
@@ -141,6 +143,21 @@ def _append_corrections_section(cfg: Config, path: Path, periods, v2b, period_re
         f.write("\n".join(lines) + "\n")
 
 
+def _run_v2a(cfg: Config, uni, prices, raw, start, end, name, kill_switch=True):
+    from nsebot.backtest.engine import run_backtest
+    from nsebot.sim_parking import ParkingSimulator
+    from nsebot.strategies.baseline import BaselineStrategy
+    holder = {}
+
+    def factory(book, all_days):
+        holder["sim"] = ParkingSimulator(book, cfg, uni, BaselineStrategy(cfg.baseline, cfg.risk.atr_stop_mult),
+                                         all_days, kill_switch=kill_switch)
+        return holder["sim"]
+    res = run_backtest(prices, None, cfg, start, end, name, raw_prices=raw, sim_factory=factory)
+    res.sim = holder["sim"]
+    return res
+
+
 def cmd_backtest(cfg: Config, args) -> int:
     from nsebot.backtest.engine import run_backtest
     from nsebot.backtest.splits import split_periods
@@ -186,13 +203,18 @@ def cmd_backtest(cfg: Config, args) -> int:
     v2b = None
     if not args.no_v2:
         v2b = _v2b_inputs(cfg, start, end, refresh=args.refresh)
+        results[V2A_BOOK] = _run_v2a(cfg, *v2b, start, end, V2A_BOOK)
+        results[V2A_DIAG] = _run_v2a(cfg, *v2b, start, end, V2A_DIAG, kill_switch=False)
         results[V2B_BOOK] = _run_v2b(cfg, *v2b, start, end, V2B_BOOK)
         results[V2B_DIAG] = _run_v2b(cfg, *v2b, start, end, V2B_DIAG, kill_switch=False)
         notes += [("v2b_momentum (strategy-v2b): point-in-time Nifty 50 (official NSE Indices changes, see "
                   "data/nifty50/), 12-1 momentum, top 10, monthly. Momentum is a well-known historical effect, so "
                   "a good backtest here is NOT proof it will continue. DIAGNOSTIC = same rules without the 10% "
                   "kill-switch, to show the strategy itself; it is not a tradable book."),
-                  "HDFC Ltd, Cairn India, Tata Motors DVR and IDFC prices come from NSE (not dividend-adjusted)."]
+                  "HDFC Ltd, Cairn India, Tata Motors DVR and IDFC prices come from NSE (not dividend-adjusted).",
+                  ("v2a_parking (strategy-v2a): the frozen v1 rules on the point-in-time Nifty 50, idle cash parked in "
+                  "NIFTYBEES (sold just enough to fund buys, proceeds re-parked). Same costs and risk rules incl. the "
+                  "10% kill-switch; DIAGNOSTIC = without the kill-switch.")]
     period_results = {}
     for title, (ps, pe) in periods.items():
         period_results[title] = {
@@ -201,6 +223,8 @@ def cmd_backtest(cfg: Config, args) -> int:
                                               buy_and_hold=True, raw_prices=raw_bench),
         }
         if v2b is not None:
+            period_results[title][V2A_BOOK] = _run_v2a(cfg, *v2b, ps, pe, V2A_BOOK)
+            period_results[title][V2A_DIAG] = _run_v2a(cfg, *v2b, ps, pe, V2A_DIAG, kill_switch=False)
             period_results[title][V2B_BOOK] = _run_v2b(cfg, *v2b, ps, pe, V2B_BOOK)
             period_results[title][V2B_DIAG] = _run_v2b(cfg, *v2b, ps, pe, V2B_DIAG, kill_switch=False)
     path = write_backtest_report(results, periods, cfg.paths.reports_dir, spend, cfg.llm.usd_inr, notes,
