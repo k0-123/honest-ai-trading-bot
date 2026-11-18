@@ -51,6 +51,10 @@ def jugaad_fetcher(symbol: str, start: str, end: str | None) -> pd.DataFrame:
     raw = stock_df(symbol=bare, from_date=from_date, to_date=to_date, series="EQ")
     raw = raw.copy()
     raw.columns = [str(c).strip().lower() for c in raw.columns]
+    if "series" in raw.columns:
+        # NSE mixes other series (e.g. HDFC warrants "W2") into the EQ request: keep only EQ rows,
+        # before the index is built, so no other series can win the keep-last-per-date in normalize().
+        raw = raw[raw["series"].astype(str).str.strip() == "EQ"]
     if "date" in raw.columns:
         # jugaad-data returns IST midnight as a naive UTC timestamp (e.g. 2024-10-28 18:30 == 29 Oct IST).
         # Interpret as UTC and convert to IST before taking the date, else every bar lands one day early.

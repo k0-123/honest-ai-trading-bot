@@ -47,10 +47,19 @@ def _strategies(cfg: Config, with_llm: bool, llm_cache_dir: str | None = None) -
 
 
 def cmd_daily(cfg: Config, args) -> int:
-    from nsebot.paper.runner import PaperRunner
+    from nsebot.paper.runner import PaperRunner, holiday_warning
     from nsebot.reports.daily import write_daily_report
     from nsebot.reports.weekly import write_weekly_report
-    runner = PaperRunner(cfg, _loader(cfg), _strategies(cfg, with_llm=not args.no_llm))
+    warn = holiday_warning(cfg)
+    if warn:
+        print(warn)
+    kw = {}
+    if not args.no_v2:
+        from nsebot.paper.books import v2_universe_books
+        from nsebot.universe.nifty50 import Nifty50Universe
+        uni = Nifty50Universe()
+        kw = {"universe": uni, "universe_loader": _universe_loader(cfg), "universe_books": v2_universe_books(cfg, uni)}
+    runner = PaperRunner(cfg, _loader(cfg), _strategies(cfg, with_llm=not args.no_llm), **kw)
     res = runner.run()
     print(res.message)
     path = write_daily_report(res, cfg.paths.reports_dir)
@@ -63,6 +72,99 @@ def cmd_daily(cfg: Config, args) -> int:
         if b.halted:
             print(f"!! {name} HALTED: {b.halt_reason}")
     return 0
+
+
+V2A_BOOK = "v2a_parking"
+V2A_DIAG = "v2a_parking DIAGNOSTIC (no kill-switch)"
+V2B_BOOK = "v2b_momentum"
+V2B_DIAG = "v2b_momentum DIAGNOSTIC (no kill-switch)"
+
+
+def _universe_loader(cfg: Config):
+    from nsebot.data.crosscheck import jugaad_fetcher
+    from nsebot.data.loader import PriceLoader
+    from nsebot.universe.nifty50 import UniversePriceLoader
+    return UniversePriceLoader(PriceLoader(cfg.data.cache_dir),
+                               PriceLoader(str(Path(cfg.data.cache_dir).parent / "prices_nse"), fetcher=jugaad_fetcher))
+
+
+def _v2b_inputs(cfg: Config, start: str, end: str, refresh: bool = False):
+    """Point-in-time Nifty 50 universe + prices for every member in [start, end] (+400 days warm-up).
+    Raises MissingPriceData rather than silently dropping a member."""
+    from nsebot.universe.nifty50 import Nifty50Universe, check_prices
+    uni, ul = Nifty50Universe(), _universe_loader(cfg)
+    data_start = (pd.Timestamp(start) - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
+    keys = sorted(uni.ever_members(start, end))
+    prices = {k: ul.get(k, data_start, end, refresh=refresh) for k in keys}
+    check_prices(uni, ul, start, end)
+    raw = {k: ul.get(k, data_start, end, clean=False) for k in keys}
+    prices[cfg.benchmark] = ul.get(cfg.benchmark, data_start, end)
+    raw[cfg.benchmark] = ul.get(cfg.benchmark, data_start, end, clean=False)
+    return uni, prices, raw
+
+
+def _run_v2b(cfg: Config, uni, prices, raw, start, end, name, kill_switch=True):
+    from nsebot.backtest.engine import run_backtest
+    from nsebot.sim_momentum import MomentumSimulator
+    from nsebot.strategies.momentum import MomentumCfg
+    holder = {}
+
+    def factory(book, all_days):
+        holder["sim"] = MomentumSimulator(book, cfg, uni, MomentumCfg(), all_days, kill_switch=kill_switch)
+        return holder["sim"]
+    res = run_backtest(prices, None, cfg, start, end, name, raw_prices=raw, sim_factory=factory)
+    res.sim = holder["sim"]
+    return res
+
+
+def _append_corrections_section(cfg: Config, path: Path, periods, v2b, period_results) -> None:
+    """Report section: v2b BEFORE vs AFTER the documented data corrections, and every correction with evidence."""
+    from nsebot.data.crosscheck import jugaad_fetcher
+    from nsebot.data.loader import PriceLoader
+    from nsebot.universe.adjustments import load_adjustments, load_bar_overrides
+    from nsebot.universe.nifty50 import UniversePriceLoader
+    uni = v2b[0]
+    adj, ov = load_adjustments(), load_bar_overrides()
+    raw_loader = UniversePriceLoader(PriceLoader(cfg.data.cache_dir),
+                                     PriceLoader(str(Path(cfg.data.cache_dir).parent / "prices_nse"), fetcher=jugaad_fetcher),
+                                     adjustments=adj.iloc[0:0], overrides=ov.iloc[0:0])
+    keys = list(v2b[1])
+    ds = min(df.index.min() for df in v2b[1].values() if len(df)).strftime("%Y-%m-%d")
+    pb = {k: raw_loader.get(k, ds) for k in keys}
+    rb = {k: raw_loader.get(k, ds, clean=False) for k in keys}
+    lines = ["", "## v2b data corrections: results BEFORE vs AFTER", "",
+             ("Same rules, same code; only the price data differs. Corrections come from a full Yahoo-vs-NSE audit "
+             "(see data/nifty50/). They were applied whether they helped or hurt v2b."), "",
+             "| Period | Book | Before | After | Difference (pp) |", "|---|---|---|---|---|"]
+    for title, (ps, pe) in periods.items():
+        for name, ks in ((V2B_BOOK, True), (V2B_DIAG, False)):
+            before = _run_v2b(cfg, uni, pb, rb, ps, pe, name, kill_switch=ks)
+            after = period_results[title][name]
+            b, a = before.equity.iloc[-1] / cfg.capital - 1, after.equity.iloc[-1] / cfg.capital - 1
+            lines.append(f"| {title} | {name} | {b:+.2%} | {a:+.2%} | {(a - b) * 100:+.2f} |")
+    lines += ["", f"### Factor adjustments ({len(adj)})", "", "| Stock | Date | Factor | Kind | Evidence |",
+              "|---|---|---|---|---|"]
+    lines += [f"| {r.key} | {r.date:%Y-%m-%d} | {r.factor:.4f} | {r.kind} | {r.evidence} |" for r in adj.itertuples()]
+    lines += ["", f"### Bar overrides: stale or bad Yahoo bars replaced by NSE's real bar ({len(ov)})", "",
+              "| Stock | Date | Evidence |", "|---|---|---|"]
+    lines += [f"| {r.key} | {r.date:%Y-%m-%d} | {r.evidence} |" for r in ov.itertuples()]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _run_v2a(cfg: Config, uni, prices, raw, start, end, name, kill_switch=True):
+    from nsebot.backtest.engine import run_backtest
+    from nsebot.sim_parking import ParkingSimulator
+    from nsebot.strategies.baseline import BaselineStrategy
+    holder = {}
+
+    def factory(book, all_days):
+        holder["sim"] = ParkingSimulator(book, cfg, uni, BaselineStrategy(cfg.baseline, cfg.risk.atr_stop_mult),
+                                         all_days, kill_switch=kill_switch)
+        return holder["sim"]
+    res = run_backtest(prices, None, cfg, start, end, name, raw_prices=raw, sim_factory=factory)
+    res.sim = holder["sim"]
+    return res
 
 
 def cmd_backtest(cfg: Config, args) -> int:
@@ -107,6 +209,21 @@ def cmd_backtest(cfg: Config, args) -> int:
                          f"budget cap ${cfg.llm.budget_usd_total:.2f}.")
     sp = cfg.backtest.splits
     periods = split_periods(start, end, sp.train_end, sp.val_end)
+    v2b = None
+    if not args.no_v2:
+        v2b = _v2b_inputs(cfg, start, end, refresh=args.refresh)
+        results[V2A_BOOK] = _run_v2a(cfg, *v2b, start, end, V2A_BOOK)
+        results[V2A_DIAG] = _run_v2a(cfg, *v2b, start, end, V2A_DIAG, kill_switch=False)
+        results[V2B_BOOK] = _run_v2b(cfg, *v2b, start, end, V2B_BOOK)
+        results[V2B_DIAG] = _run_v2b(cfg, *v2b, start, end, V2B_DIAG, kill_switch=False)
+        notes += [("v2b_momentum (strategy-v2b): point-in-time Nifty 50 (official NSE Indices changes, see "
+                  "data/nifty50/), 12-1 momentum, top 10, monthly. Momentum is a well-known historical effect, so "
+                  "a good backtest here is NOT proof it will continue. DIAGNOSTIC = same rules without the 10% "
+                  "kill-switch, to show the strategy itself; it is not a tradable book."),
+                  "HDFC Ltd, Cairn India, Tata Motors DVR and IDFC prices come from NSE (not dividend-adjusted).",
+                  ("v2a_parking (strategy-v2a): the frozen v1 rules on the point-in-time Nifty 50, idle cash parked in "
+                  "NIFTYBEES (sold just enough to fund buys, proceeds re-parked). Same costs and risk rules incl. the "
+                  "10% kill-switch; DIAGNOSTIC = without the kill-switch.")]
     period_results = {}
     for title, (ps, pe) in periods.items():
         period_results[title] = {
@@ -114,8 +231,15 @@ def cmd_backtest(cfg: Config, args) -> int:
             "buyhold_niftybees": run_backtest({cfg.benchmark: bench}, None, cfg, ps, pe, "buyhold_niftybees",
                                               buy_and_hold=True, raw_prices=raw_bench),
         }
+        if v2b is not None:
+            period_results[title][V2A_BOOK] = _run_v2a(cfg, *v2b, ps, pe, V2A_BOOK)
+            period_results[title][V2A_DIAG] = _run_v2a(cfg, *v2b, ps, pe, V2A_DIAG, kill_switch=False)
+            period_results[title][V2B_BOOK] = _run_v2b(cfg, *v2b, ps, pe, V2B_BOOK)
+            period_results[title][V2B_DIAG] = _run_v2b(cfg, *v2b, ps, pe, V2B_DIAG, kill_switch=False)
     path = write_backtest_report(results, periods, cfg.paths.reports_dir, spend, cfg.llm.usd_inr, notes,
                                  period_results)
+    if v2b is not None:
+        _append_corrections_section(cfg, Path(path), periods, v2b, period_results)
     print(f"Backtest report: {path}")
     for name, r in results.items():
         s = r.summary()
@@ -168,8 +292,14 @@ def cmd_datacheck(cfg: Config, args) -> int:
 def cmd_replay(cfg: Config, args) -> int:
     from nsebot.paper.replay import render, replay
     from nsebot.reports.daily import write_daily_report
+    kw = {}
+    if not args.no_v2:
+        from nsebot.paper.books import v2_universe_books
+        from nsebot.universe.nifty50 import Nifty50Universe
+        uni = Nifty50Universe()
+        kw = {"universe": uni, "universe_loader": _universe_loader(cfg), "universe_books": v2_universe_books(cfg, uni)}
     res = replay(cfg, _loader(cfg), args.start, args.end, args.out,
-                 report_fn=lambda r, d: write_daily_report(r, d))
+                 report_fn=lambda r, d: write_daily_report(r, d), **kw)
     text = render(res, cfg.capital)
     (res.out_dir / "replay_summary.md").write_text(text, encoding="utf-8")
     print(text)
@@ -202,11 +332,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("daily", help="run after market close (16:30 IST)")
     d.add_argument("--no-llm", action="store_true")
+    d.add_argument("--no-v2", action="store_true", help="skip the v2a/v2b universe books")
     d.add_argument("--weekly", action="store_true", help="also write the weekly report")
     b = sub.add_parser("backtest")
     b.add_argument("--start")
     b.add_argument("--end")
     b.add_argument("--refresh", action="store_true", help="re-download recent prices")
+    b.add_argument("--no-v2", action="store_true", help="skip the v2 books (faster)")
     b.add_argument("--llm-days", type=int, default=0, help="also run a CONTAMINATED LLM sample on last N sessions")
     sub.add_parser("report-weekly")
     c = sub.add_parser("crosscheck", help="compare Yahoo vs NSE (jugaad-data) returns")
@@ -217,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--start", default="2026-10-01")
     rp.add_argument("--end", help="default: today")
     rp.add_argument("--out", default="replay", help="separate folder (never the real state dir)")
+    rp.add_argument("--no-v2", action="store_true", help="skip the v2a/v2b universe books")
     r = sub.add_parser("reset-halt")
     r.add_argument("--book", required=True)
     r.add_argument("--confirm", action="store_true")

@@ -34,5 +34,6 @@ class RiskManager:
     def daily_loss_breached(self, prev_equity: float, equity: float) -> bool:
         return prev_equity > 0 and (equity / prev_equity - 1) <= -self.cfg.daily_loss_limit_pct + _EPS
 
-    def drawdown_breached(self, peak_equity: float, equity: float) -> bool:
-        return peak_equity > 0 and (1 - equity / peak_equity) >= self.cfg.max_drawdown_pct - _EPS
+    def drawdown_breached(self, peak_equity: float, equity: float, limit: float | None = None) -> bool:
+        lim = self.cfg.max_drawdown_pct if limit is None else limit
+        return peak_equity > 0 and (1 - equity / peak_equity) >= lim - _EPS

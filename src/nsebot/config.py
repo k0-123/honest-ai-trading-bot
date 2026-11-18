@@ -81,6 +81,20 @@ class Config(BaseModel):
     llm: LlmCfg = LlmCfg()
     backtest: BacktestCfg = BacktestCfg()
     paths: PathsCfg = PathsCfg()
+    # Weekday NSE trading holidays (YYYY-MM-DD) from NSE's published calendar. Used only in live paper mode, where
+    # tomorrow's bar does not exist yet, to find the last session of a month (v2b rebalance). Keep it up to date.
+    nse_holidays: list[str] = []
+    # Forward paper trading only: per-book drawdown halt levels that override risk.max_drawdown_pct.
+    # Set BEFORE forward trading started (see README). Backtests always use risk.max_drawdown_pct.
+    paper_max_drawdown: dict[str, float] = {}
+
+    @field_validator("paper_max_drawdown")
+    @classmethod
+    def _dd_range(cls, v: dict[str, float]) -> dict[str, float]:
+        for k, x in v.items():
+            if not 0 < x <= 0.5:
+                raise ValueError(f"paper_max_drawdown[{k}] must be in (0, 0.5]")
+        return v
 
     @field_validator("symbols")
     @classmethod

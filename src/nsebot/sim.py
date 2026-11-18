@@ -41,9 +41,13 @@ def _d(date) -> str:
 
 class Simulator:
     def __init__(self, book: Book, cfg: Config, strategy: Strategy | None, symbols: list[str],
-                 buy_and_hold: bool = False):
+                 buy_and_hold: bool = False, kill_switch: bool = True):
         self.book, self.cfg, self.strategy, self.symbols = book, cfg, strategy, symbols
         self.buy_and_hold = buy_and_hold
+        self.kill_switch = kill_switch  # False only for DIAGNOSTIC backtests
+        # Drawdown halt level. Backtests use cfg.risk (10%); forward paper books may override it per book
+        # (config paper_max_drawdown), set by the paper book factory, never by strategy code.
+        self.max_drawdown_pct = cfg.risk.max_drawdown_pct
         self.risk = RiskManager(cfg.risk)
         self.signals: list[Signal] = []
         self._today_raw: dict[str, pd.Series] = {}
@@ -103,6 +107,14 @@ class Simulator:
 
     # ---------- close ----------
     def on_close(self, date, histories: dict[str, pd.DataFrame]) -> list[Signal]:
+        eq = self._mark_and_guard(date, histories)
+        if eq is None:
+            return []
+        return self._decide(date, histories, eq)
+
+    def _mark_and_guard(self, date, histories: dict[str, pd.DataFrame]) -> float | None:
+        """Mark to market, apply the kill-switch / daily-loss gate and queue stop exits.
+        Returns equity, or None when the book is halted (no new decisions)."""
         b, ds = self.book, _d(date)
         for sym, h in histories.items():
             if len(h) and h.index[-1] == pd.Timestamp(date):
@@ -113,17 +125,17 @@ class Simulator:
         b.equity_curve.append((ds, round(eq, 2)))
         b.invested_curve.append((ds, round(eq - b.cash, 2)))
         b.last_equity, b.last_date = eq, ds
-        todays: list[Signal] = []
 
         if b.halted:
-            return todays
+            return None
         # The passive benchmark is never subject to the bot's circuit breakers.
-        if not self.buy_and_hold and self.risk.drawdown_breached(b.peak_equity, eq):
+        if self.kill_switch and not self.buy_and_hold and \
+                self.risk.drawdown_breached(b.peak_equity, eq, self.max_drawdown_pct):
             dd = 1 - eq / b.peak_equity
             b.halted = True
-            b.halt_reason = f"KILL-SWITCH {ds}: drawdown {dd:.1%} >= {self.cfg.risk.max_drawdown_pct:.0%}"
+            b.halt_reason = f"KILL-SWITCH {ds}: drawdown {dd:.1%} >= {self.max_drawdown_pct:.0%}"
             b.pending = [Order(s, "SELL", p.qty, b.halt_reason, "risk", ds) for s, p in b.positions.items()]
-            return todays
+            return None
         b.block_new_entries = self.risk.daily_loss_breached(prev, eq)
 
         # Stops: the bot runs once after the close and has no resting order at a broker, so a stop
@@ -137,7 +149,12 @@ class Simulator:
             b.pending.append(Order(sym, "SELL", pos.qty,
                                    f"STOP breached {ds}: low {float(bar['low']):.2f} <= stop {pos.stop:.2f} "
                                    f"(open {float(bar['open']):.2f}); sell at next open", pos.source, ds))
+        return eq
 
+    def _decide(self, date, histories: dict[str, pd.DataFrame], eq: float) -> list[Signal]:
+        """v1 per-symbol signal logic (and the buy-and-hold benchmark)."""
+        b, ds = self.book, _d(date)
+        todays: list[Signal] = []
         if self.buy_and_hold:
             if not b.positions and not b.pending and not b.trades:
                 sym = self.symbols[0]

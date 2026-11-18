@@ -31,6 +31,16 @@ TRADE_COLS = ["date", "symbol", "side", "qty", "price", "costs", "reason", "sign
 BENCH_BOOK = "buyhold_niftybees"
 
 
+def holiday_warning(cfg: Config, now: datetime | None = None) -> str | None:
+    """Warn when config.nse_holidays has no entry for the current year (v2b month-end detection and holiday
+    skipping then rely on the data feed alone)."""
+    year = str((now or datetime.now(IST)).year)
+    if any(h.startswith(year) for h in cfg.nse_holidays):
+        return None
+    return (f"WARNING: config.yaml nse_holidays has no {year} dates. Add NSE's official {year} trading-holiday list "
+            "(see data/nse_holidays/ and README).")
+
+
 def effective_date(now: datetime | None = None) -> pd.Timestamp:
     """Last date whose daily bar is complete."""
     now = (now or datetime.now(IST)).astimezone(IST)
@@ -47,8 +57,13 @@ class DailyResult:
 
 
 class PaperRunner:
-    def __init__(self, cfg: Config, loader, strategies: dict[str, Strategy], state_dir: str | Path | None = None):
+    def __init__(self, cfg: Config, loader, strategies: dict[str, Strategy], state_dir: str | Path | None = None,
+                 universe=None, universe_loader=None, universe_books: dict | None = None):
+        """universe_books: {name: factory(book, calendar_days) -> Simulator} for books trading the point-in-time
+        Nifty 50 (v2a, v2b). Their prices come from universe_loader (documented corrections applied)."""
         self.cfg, self.loader, self.strategies = cfg, loader, strategies
+        self.universe, self.universe_loader = universe, universe_loader
+        self.universe_books = universe_books or {}
         self.state_dir = Path(state_dir or cfg.paths.state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,11 +122,13 @@ class PaperRunner:
             res.message = "No price data available; nothing done."
             return res
         books = self.load_books()
-        for name in list(self.strategies) + [BENCH_BOOK]:
+        for name in list(self.strategies) + [BENCH_BOOK] + list(self.universe_books):
             books.setdefault(name, Book(name, cash=self.cfg.capital))
         last_done = max((pd.Timestamp(b.last_date) for b in books.values() if b.last_date), default=None)
         days = sorted(set().union(*[df.index for s, df in raw.items() if s in syms]))
-        days = [d for d in days if d <= upto and (last_done is None or d > last_done)]
+        holidays = {pd.Timestamp(h) for h in self.cfg.nse_holidays}
+        # an NSE holiday is never a session, even if the feed shows a (phantom, zero-volume) bar for it
+        days = [d for d in days if d <= upto and d not in holidays and (last_done is None or d > last_done)]
         if last_done is None:
             days = days[-1:]  # first ever run: start from the latest completed session only
         if not days:
@@ -121,16 +138,44 @@ class PaperRunner:
             return res
         sims = {name: Simulator(books[name], self.cfg, strat, syms) for name, strat in self.strategies.items()}
         sims[BENCH_BOOK] = Simulator(books[BENCH_BOOK], self.cfg, None, [bench], buy_and_hold=True)
+        usims, uprices, uraw = {}, {}, {}
+        if self.universe_books:
+            calendar = sorted(set().union(*[df.index for s, df in raw.items() if s in syms]))  # sessions <= upto only
+            held = set().union(*[set(books[n].positions) for n in self.universe_books])
+            keys = (set().union(*[set(self.universe.members_on(d)) for d in days]) | held | {bench})
+            ustart = (days[0] - pd.Timedelta(days=600)).strftime("%Y-%m-%d")
+            for k in sorted(keys):
+                df = self.universe_loader.get(k, ustart, as_of=upto, refresh=True)
+                if len(df):
+                    uprices[k] = df
+                    uraw[k] = self.universe_loader.get(k, ustart, as_of=upto, clean=False)
+            usims = {n: f(books[n], calendar) for n, f in self.universe_books.items()}
         for d in days:
             today = {s: df.loc[d] for s, df in raw.items() if d in df.index}  # raw: fills + stops
             hist = {s: df.loc[:d] for s, df in prices.items()}
             for name, sim in sims.items():
-                sim.on_open(d, today)
+                if sim.book.last_date is None:
+                    sim._today_raw = today        # first session: the bot did not exist at this open -> no fills
+                else:
+                    sim.on_open(d, today)
                 for sg in sim.on_close(d, hist):
                     res.signals.append({"date": d.strftime("%Y-%m-%d"), "book": name, "symbol": sg.symbol,
                                         "action": sg.action, "confidence": round(sg.confidence, 3),
                                         "stop": None if sg.stop is None else round(sg.stop, 2),
                                         "contaminated": sg.contaminated, "reason": sg.reason})
+            if usims:
+                utoday = {k: df.loc[d] for k, df in uraw.items() if d in df.index}
+                uhist = {k: df.loc[:d] for k, df in uprices.items()}
+                for name, sim in usims.items():
+                    if sim.book.last_date is None:
+                        sim._today_raw = utoday   # first session: the bot did not exist at this open -> no fills
+                    else:
+                        sim.on_open(d, utoday)
+                    for sg in sim.on_close(d, uhist):
+                        res.signals.append({"date": d.strftime("%Y-%m-%d"), "book": name, "symbol": sg.symbol,
+                                            "action": sg.action, "confidence": round(sg.confidence, 3),
+                                            "stop": None if sg.stop is None else round(sg.stop, 2),
+                                            "contaminated": sg.contaminated, "reason": sg.reason})
             res.processed_days.append(d.strftime("%Y-%m-%d"))
         self._save(books)
         self._append_signals(res.signals)

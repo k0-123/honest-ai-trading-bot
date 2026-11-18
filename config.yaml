@@ -43,6 +43,30 @@ llm:
   price_per_mtok_usd: {input: 0.30, output: 2.50}
 backtest:
   splits: {train_end: "2020-12-31", val_end: "2022-12-31"}   # test = after val_end
+# NSE trading holidays: the paper runner never treats these as sessions (Yahoo sometimes shows phantom bars on
+# holidays), and v2b uses them in paper mode to find the last session of a month.
+nse_holidays:   # NSE official equity trading holidays (weekdays). Source: data/nse_holidays/. Add 2027 when NSE publishes it (usually December).
+  - "2026-01-15"   # Municipal Corporation Election - Maharashtra
+  - "2026-01-26"   # Republic Day
+  - "2026-03-03"   # Holi
+  - "2026-03-26"   # Shri Ram Navami
+  - "2026-03-31"   # Shri Mahavir Jayanti
+  - "2026-04-03"   # Good Friday
+  - "2026-04-14"   # Dr. Baba Saheb Ambedkar Jayanti
+  - "2026-05-01"   # Maharashtra Day
+  - "2026-05-28"   # Bakri Id
+  - "2026-06-26"   # Muharram
+  - "2026-09-14"   # Ganesh Chaturthi
+  - "2026-10-02"   # Mahatma Gandhi Jayanti
+  - "2026-10-20"   # Dussehra
+  - "2026-11-10"   # Diwali-Balipratipada
+  - "2026-11-24"   # Prakash Gurpurb Sri Guru Nanak Dev
+  - "2026-12-25"   # Christmas
+# Forward paper trading kill-switch per book (set before forward trading started; see README section 6d).
+# v1 ("baseline") keeps risk.max_drawdown_pct = 10%. Backtests always use 10%.
+paper_max_drawdown:
+  v2a_parking: 0.15
+  v2b_momentum: 0.15
 paths:
   state_dir: state
   reports_dir: reports_out

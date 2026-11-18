@@ -1,0 +1,100 @@
+# Daily paper-trading run (no real money, no broker). See docs/github_actions.md.
+name: Daily paper run
+
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"   # 11:00 UTC = 16:30 IST, Monday-Friday (GitHub may start it a few minutes late)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write            # to commit state/ and reports back to the repo
+
+concurrency:
+  group: daily-paper-run
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Restore price cache
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: prices-${{ github.run_id }}
+          restore-keys: prices-
+
+      - name: Decide whether the AI book runs
+        id: ai
+        run: |
+          # AI book stays OFF for the first 5 completed runs, and after that only if you set the
+          # repository variable ENABLE_AI_BOOK=true (Settings > Secrets and variables > Actions > Variables).
+          runs=$(grep -c "outcome=success" state/actions_runs.log 2>/dev/null || true)
+          runs=${runs:-0}
+          if [ "$runs" -ge 5 ] && [ "${{ vars.ENABLE_AI_BOOK }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "completed runs so far: $runs; AI book enabled: $( [ "$runs" -ge 5 ] && [ "${{ vars.ENABLE_AI_BOOK }}" = "true" ] && echo yes || echo no)"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          if [ "${{ steps.ai.outputs.enabled }}" = "true" ]; then pip install -e ".[llm]"; fi
+
+      - name: Daily paper run
+        id: run
+        continue-on-error: true
+        env:
+          GOOGLE_API_KEY: ${{ steps.ai.outputs.enabled == 'true' && secrets.GOOGLE_API_KEY || '' }}
+        run: |
+          set -o pipefail
+          flags=""
+          if [ "${{ steps.ai.outputs.enabled }}" != "true" ]; then flags="--no-llm"; fi
+          nsebot daily $flags 2>&1 | tee daily_run.log
+
+      - name: Record run
+        if: always()
+        run: |
+          mkdir -p state
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) run=${{ github.run_id }} outcome=${{ steps.run.outcome }} ai=${{ steps.ai.outputs.enabled }}" >> state/actions_runs.log
+
+      - name: Commit state and reports
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f state reports_out/daily reports_out/weekly 2>/dev/null || git add -f state
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git commit -m "Daily paper run $(date -u +%Y-%m-%d) [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --quiet && git push && exit 0
+            sleep $((i * 5))
+          done
+          echo "::error::could not push state after 4 attempts"; exit 1
+
+      - name: Fail if the run failed or a book is HALTED
+        if: always()
+        run: |
+          status=0
+          if [ "${{ steps.run.outcome }}" != "success" ]; then
+            echo "::error::nsebot daily failed (see the 'Daily paper run' step log)"; status=1
+          fi
+          for f in state/HALTED_*; do
+            [ -e "$f" ] || continue
+            echo "::error::$(basename "$f"): $(cat "$f"). Reset with: nsebot reset-halt --book <name> --confirm"
+            status=1
+          done
+          exit $status
