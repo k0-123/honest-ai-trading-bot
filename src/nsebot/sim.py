@@ -45,6 +45,9 @@ class Simulator:
         self.book, self.cfg, self.strategy, self.symbols = book, cfg, strategy, symbols
         self.buy_and_hold = buy_and_hold
         self.kill_switch = kill_switch  # False only for DIAGNOSTIC backtests
+        # Drawdown halt level. Backtests use cfg.risk (10%); forward paper books may override it per book
+        # (config paper_max_drawdown), set by the paper book factory, never by strategy code.
+        self.max_drawdown_pct = cfg.risk.max_drawdown_pct
         self.risk = RiskManager(cfg.risk)
         self.signals: list[Signal] = []
         self._today_raw: dict[str, pd.Series] = {}
@@ -126,10 +129,11 @@ class Simulator:
         if b.halted:
             return None
         # The passive benchmark is never subject to the bot's circuit breakers.
-        if self.kill_switch and not self.buy_and_hold and self.risk.drawdown_breached(b.peak_equity, eq):
+        if self.kill_switch and not self.buy_and_hold and \
+                self.risk.drawdown_breached(b.peak_equity, eq, self.max_drawdown_pct):
             dd = 1 - eq / b.peak_equity
             b.halted = True
-            b.halt_reason = f"KILL-SWITCH {ds}: drawdown {dd:.1%} >= {self.cfg.risk.max_drawdown_pct:.0%}"
+            b.halt_reason = f"KILL-SWITCH {ds}: drawdown {dd:.1%} >= {self.max_drawdown_pct:.0%}"
             b.pending = [Order(s, "SELL", p.qty, b.halt_reason, "risk", ds) for s, p in b.positions.items()]
             return None
         b.block_new_entries = self.risk.daily_loss_breached(prev, eq)

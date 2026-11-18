@@ -317,6 +317,29 @@ A separate ₹1,00,000 paper book (`v2a_parking`) on the same point-in-time Nift
 - **No strategy beats buy-and-hold NIFTYBEES across the periods.** v2b and v2a each come out ahead in val only (v2b with the kill-switch, v2a without it).
 - These are backtests, and momentum and trend rules are well-known, widely published ideas. **Only forward paper trading counts as evidence.**
 
+## 6d. Forward paper trading: kill-switch levels (set before forward trading started)
+
+Decided on 2026-11-18, **before any forward paper results existed**, and set in `config.yaml` (`paper_max_drawdown`):
+
+| Book | Drawdown halt | Daily-loss pause |
+|---|---|---|
+| v1 baseline | 10% (unchanged) | 2% |
+| v2a parking | **15%** | 2% |
+| v2b momentum | **15%** | 2% |
+
+**Why:**
+- v2a and v2b are designed to be fully invested, v2a through NIFTYBEES parking and v2b with 10 stocks.
+- In the backtests, the 10% halt fired in **every** period for both books, usually during ordinary market drops: demonetisation (Dec 2016), Nov 2021, the 4 Jun 2024 election-result day, and early 2023.
+- After a halt the book sits in cash for the rest of the run, so a 10% halt mostly measures one bad month, not the strategy.
+- 15% still caps losses, but lets an invested book get through a normal correction. v1 is mostly in cash, so its 10% stays.
+
+**How it works:**
+- A halt still flattens the book and writes `state/HALTED_<book>`.
+- The book stays halted until you run `nsebot reset-halt --book <name> --confirm`.
+- The 2% daily-loss pause (no new entries the next session) is unchanged for every book.
+- **Backtests are unchanged:** all backtest numbers above use the 10% halt, and so do the frozen strategy guards.
+- The strategy rules themselves are not changed by this. It is a risk setting of the forward paper books.
+
 ## 7. Not included (on purpose)
 
 - **Live trading.** Under SEBI's retail algo framework (in force from April 2026), retail algo orders need a **broker-approved API, a registered static IP and an exchange Algo-ID**. Nothing here places real orders. Ask explicitly before any live work starts.

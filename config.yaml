@@ -45,6 +45,11 @@ backtest:
   splits: {train_end: "2020-12-31", val_end: "2022-12-31"}   # test = after val_end
 # Weekday NSE holidays from NSE's published calendar (paper mode uses them to spot the last session of a month).
 nse_holidays: []
+# Forward paper trading kill-switch per book (set before forward trading started; see README section 6d).
+# v1 ("baseline") keeps risk.max_drawdown_pct = 10%. Backtests always use 10%.
+paper_max_drawdown:
+  v2a_parking: 0.15
+  v2b_momentum: 0.15
 paths:
   state_dir: state
   reports_dir: reports_out
