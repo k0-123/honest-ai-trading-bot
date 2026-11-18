@@ -106,6 +106,41 @@ def _run_v2b(cfg: Config, uni, prices, raw, start, end, name, kill_switch=True):
     return res
 
 
+def _append_corrections_section(cfg: Config, path: Path, periods, v2b, period_results) -> None:
+    """Report section: v2b BEFORE vs AFTER the documented data corrections, and every correction with evidence."""
+    from nsebot.data.crosscheck import jugaad_fetcher
+    from nsebot.data.loader import PriceLoader
+    from nsebot.universe.adjustments import load_adjustments, load_bar_overrides
+    from nsebot.universe.nifty50 import UniversePriceLoader
+    uni = v2b[0]
+    adj, ov = load_adjustments(), load_bar_overrides()
+    raw_loader = UniversePriceLoader(PriceLoader(cfg.data.cache_dir),
+                                     PriceLoader(str(Path(cfg.data.cache_dir).parent / "prices_nse"), fetcher=jugaad_fetcher),
+                                     adjustments=adj.iloc[0:0], overrides=ov.iloc[0:0])
+    keys = list(v2b[1])
+    ds = min(df.index.min() for df in v2b[1].values() if len(df)).strftime("%Y-%m-%d")
+    pb = {k: raw_loader.get(k, ds) for k in keys}
+    rb = {k: raw_loader.get(k, ds, clean=False) for k in keys}
+    lines = ["", "## v2b data corrections: results BEFORE vs AFTER", "",
+             ("Same rules, same code; only the price data differs. Corrections come from a full Yahoo-vs-NSE audit "
+             "(see data/nifty50/). They were applied whether they helped or hurt v2b."), "",
+             "| Period | Book | Before | After | Difference (pp) |", "|---|---|---|---|---|"]
+    for title, (ps, pe) in periods.items():
+        for name, ks in ((V2B_BOOK, True), (V2B_DIAG, False)):
+            before = _run_v2b(cfg, uni, pb, rb, ps, pe, name, kill_switch=ks)
+            after = period_results[title][name]
+            b, a = before.equity.iloc[-1] / cfg.capital - 1, after.equity.iloc[-1] / cfg.capital - 1
+            lines.append(f"| {title} | {name} | {b:+.2%} | {a:+.2%} | {(a - b) * 100:+.2f} |")
+    lines += ["", f"### Factor adjustments ({len(adj)})", "", "| Stock | Date | Factor | Kind | Evidence |",
+              "|---|---|---|---|---|"]
+    lines += [f"| {r.key} | {r.date:%Y-%m-%d} | {r.factor:.4f} | {r.kind} | {r.evidence} |" for r in adj.itertuples()]
+    lines += ["", f"### Bar overrides: stale or bad Yahoo bars replaced by NSE's real bar ({len(ov)})", "",
+              "| Stock | Date | Evidence |", "|---|---|---|"]
+    lines += [f"| {r.key} | {r.date:%Y-%m-%d} | {r.evidence} |" for r in ov.itertuples()]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def cmd_backtest(cfg: Config, args) -> int:
     from nsebot.backtest.engine import run_backtest
     from nsebot.backtest.splits import split_periods
@@ -170,6 +205,8 @@ def cmd_backtest(cfg: Config, args) -> int:
             period_results[title][V2B_DIAG] = _run_v2b(cfg, *v2b, ps, pe, V2B_DIAG, kill_switch=False)
     path = write_backtest_report(results, periods, cfg.paths.reports_dir, spend, cfg.llm.usd_inr, notes,
                                  period_results)
+    if v2b is not None:
+        _append_corrections_section(cfg, Path(path), periods, v2b, period_results)
     print(f"Backtest report: {path}")
     for name, r in results.items():
         s = r.summary()

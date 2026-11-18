@@ -190,6 +190,85 @@ The baseline rules were changed **twice after seeing backtest output**. These we
 
 Not run yet (needs `GOOGLE_API_KEY`). Any LLM backtest on historical dates is **CONTAMINATED** by design and is not evidence of skill. **Only forward paper-trading results count.**
 
+## 6b. Strategy v2b: Momentum (frozen at tag `strategy-v2b`)
+
+A separate ₹1,00,000 paper book (`v2b_momentum`). v1 is unchanged and keeps running.
+
+**Universe: the point-in-time Nifty 50.** Each date uses only the stocks that were in the index on that date, rebuilt from NSE's official current list plus every NIFTY 50 change in NSE Indices' official press releases since 2014 (`data/nifty50/`, with the source file for each change). The reconstruction:
+- has exactly 50 members at every step, except Apr 2016 – Sep 2017, when Tata Motors DVR was a 51st security (Wikipedia's change list misses this);
+- leaves out temporary demerger inclusions that lasted only days or weeks (Jio Financial 2023, ITC Hotels 2025, TML Commercial Vehicles 2025);
+- uses NSE prices for HDFC Ltd, Cairn India, Tata Motors DVR and IDFC, which have no Yahoo history (not dividend-adjusted, a small bias);
+- refuses to run if any member is missing price history.
+
+**Rules (fixed before the first backtest; commit `5e010f5`):**
+- **Rebalance:** decided at the close of the last session of each month, filled at the open of the first trading day of the next month.
+- **Ranking:** Nifty 50 members by 12-month return excluding the latest month (close 21 sessions ago ÷ close 252 sessions ago − 1).
+- **Holdings:** the top 10, about 10% each. A holding is sold only when its rank drops below 20 (or it leaves the index); freed slots go to the best-ranked stocks not held. No trimming of winners.
+- **Risk-off:** if NIFTYBEES closes below its 200-day average at the decision, hold **cash**: no new stocks that month, and sells still happen. *(Rule fixed by you before any v2b result was seen; the first draft parked cash in NIFTYBEES.)*
+- **Risk and costs:** the same as v1. That means a 2×ATR stop on every position, sold at the next open when breached; sizing of min(10%, the 1% risk rule, the 20% cap); the 2% daily-loss gate; and the **10% kill-switch**. "DIAGNOSTIC" runs remove only the kill-switch to show the strategy itself; they are not a tradable book.
+
+**Honest label:** momentum is a well-known historical effect, and its long-run record is widely published. A backtest like this is **not proof** that it will work from here. Only forward paper trading counts.
+
+### Results (net of costs; a fresh ₹1L in each period; corrected data)
+
+| Period | Book | Return | Days invested | Trades | Costs | Max DD |
+|---|---|---|---|---|---|---|
+| Train 2015-10 → 2020-12 | v1 baseline | −8.72% | 26.0% | 58 | ₹1,552 | 10.5% |
+| | **v2b momentum** | **+3.57%** (kill-switch 2016-12-20) | 11.6% | 64 | ₹1,223 | 10.2% |
+| | v2b DIAGNOSTIC | +14.45% | 81.6% | 292 | ₹5,711 | 25.8% |
+| | NIFTYBEES buy-and-hold | +81.09% | 99.9% | 1 | ₹117 | 36.1% |
+| Val 2021 → 2022 | v1 baseline | +2.32% | 41.7% | 19 | ₹523 | 3.2% |
+| | **v2b momentum** | **+31.83%** (kill-switch 2021-11-22) | 40.1% | 44 | ₹854 | 10.7% |
+| | v2b DIAGNOSTIC | +22.95% | 96.0% | 89 | ₹1,669 | 25.0% |
+| | NIFTYBEES buy-and-hold | +31.20% | 99.8% | 1 | ₹118 | 16.1% |
+| Test 2023 → 2026-11 | v1 baseline | −4.16% | 39.1% | 64 | ₹1,846 | 5.6% |
+| | **v2b momentum** | **+37.54%** (kill-switch 2024-06-04) | 34.5% | 78 | ₹1,471 | 10.5% |
+| | v2b DIAGNOSTIC | +23.75% | 83.9% | 160 | ₹3,165 | 24.1% |
+| | NIFTYBEES buy-and-hold | +43.31% | 99.9% | 1 | ₹118 | 15.2% |
+
+**Verdict:**
+- v2b beats v1 in every period.
+- It does **not** beat buy-and-hold NIFTYBEES in any period.
+- The kill-switch fired in all three periods, so most of the "v2b" numbers are a few good months followed by sitting in cash.
+
+### Why DIAGNOSTIC made only +14% in 2015–2020 (NIFTYBEES +81%)
+
+- **Risk-off months:** 14 of 63 rebalances (Oct 2015 – Mar 2016, Dec 2016, Oct 2018, Aug 2019, Feb – Jun 2020). The book was 100% cash on 18% of days and 68% invested on average.
+- **2018–19:** −9.3% vs NIFTYBEES +19.8%, while 77% invested. Momentum picks did badly, with 107 stop-outs over the period in total.
+- **2020:** it was out at the bottom. All positions were stopped out in the March crash (−10.5% vs NIFTYBEES −29.0% for Q1). It then stayed fully in cash through Apr – Jul 2020 (risk-off decisions Mar – Jun), so it **missed most of the recovery**: Apr – Dec +13.2% vs NIFTYBEES +66.8%. It only re-bought in Aug 2020.
+
+### Why the kill-switch book beat DIAGNOSTIC in 2021–22 and 2023–26
+
+- **Val:** the kill-switch fired on **22 Nov 2021** (−10.2%), and the book was flat at the next open. Afterwards NIFTYBEES ended +5.0% (range −11.5% to +9.0%). DIAGNOSTIC peaked at ₹1,39,127 on 17 Jan 2022, then fell 11.6%, ending −7.2% from the halt.
+- **Test:** the kill-switch fired on **4 Jun 2024** (election-results day, −10.5%). Afterwards NIFTYBEES rose +14.8%, while DIAGNOSTIC peaked at ₹1,59,338 on 1 Aug 2024 and then fell 22.3%, ending −8.9% from the halt.
+- **So:** the market went up after both halts, but momentum went down. Sitting in cash beat staying in momentum. It did **not** beat simply holding the index.
+
+### Data corrections (full Yahoo-vs-NSE audit)
+
+**The audit:** all 77 Yahoo-priced members plus NIFTYBEES were compared day by day with NSE's own prices over the dates that matter: 154,131 stock-days. Of 335 days where the two disagree by more than 1.5%, 299 are correct Yahoo adjustments (210 dividends, 89 splits/bonuses). Every corporate action since 2014 was also checked against NSE's corporate-action records.
+
+**Real errors corrected, each with evidence in `data/nifty50/`:**
+- **73 bar overrides** (`bar_overrides.csv`): stale Yahoo bars that repeat the previous close, replaced with NSE's real bar:
+  - **53 stocks on 18 Mar 2025**
+  - Diwali Muhurat sessions (2018, 2021, 2022, 2024)
+  - a few others
+  - the NIFTYBEES Dec 2019 split glitch
+- **4 factor adjustments** (`adjustments.csv`):
+  - Trent: the 1:2 bonus (ex-date 4 Jun 2026) was adjusted by Yahoo only from 1 Jan 2026.
+  - Adani Enterprises: the 3:25 rights issue (ex-date 17 Nov 2025) was adjusted only from 10 Nov.
+  - **Unadjusted demergers:** Tata Motors (14 Oct 2025, factor 0.605) and Hindustan Unilever (5 Dec 2025).
+- **Known and not corrected:** Britannia's Aug 2019 debenture bonus. NSE's record gives no value, so no factor can be computed from records.
+
+**Effect:**
+- v2b changed by at most 0.26 percentage points; the before/after table is in `reports_out/backtest_report.md`, which lists every correction. The same picks were made, with different share counts.
+- **v1 re-run on corrected data: identical**, with zero trades different. v1 still uses its original data path.
+
+### Independent cross-check (vectorbt)
+
+`scripts/crosscheck_v2b_vectorbt.py` re-implements the v2b rules from the spec without importing the simulator, and lets vectorbt do the accounting (fills, slippage, buy/sell fees, DP charge).
+- **Result:** all 6 runs (3 periods × with/without kill-switch) match **exactly**: identical trades, identical returns, costs within ₹0.01.
+- **Limit:** it can't catch a spec misreading shared by both implementations, or errors in the shared data (that's what the audit is for).
+
 ## 7. Not included (on purpose)
 
 - **Live trading.** Under SEBI's retail algo framework (in force from April 2026), retail algo orders need a **broker-approved API, a registered static IP and an exchange Algo-ID**. Nothing here places real orders. Ask explicitly before any live work starts.
