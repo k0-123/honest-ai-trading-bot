@@ -43,6 +43,8 @@ llm:
   price_per_mtok_usd: {input: 0.30, output: 2.50}
 backtest:
   splits: {train_end: "2020-12-31", val_end: "2022-12-31"}   # test = after val_end
+# Weekday NSE holidays from NSE's published calendar (paper mode uses them to spot the last session of a month).
+nse_holidays: []
 paths:
   state_dir: state
   reports_dir: reports_out

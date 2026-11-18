@@ -37,10 +37,10 @@ If `GOOGLE_API_KEY` is missing, the LLM book is skipped and everything else stil
 
 | Command | What it does |
 |---|---|
-| `nsebot daily` | **Daily paper run** (after market close). Add `--no-llm` to skip the LLM; `--weekly` forces the weekly report |
+| `nsebot daily` | **Daily paper run** (after market close). Runs v1 baseline, NIFTYBEES buy-and-hold, **v2a_parking** and **v2b_momentum** (`--no-v2` skips the v2 books; `--no-llm` skips the LLM; `--weekly` forces the weekly report) |
 | `nsebot backtest` | Baseline vs buy-and-hold backtest, written to `reports_out/backtest_report.md` |
 | `nsebot backtest --llm-days 20` | Also runs a small **CONTAMINATED** LLM sample on the last 20 sessions (budget-capped) |
-| `nsebot replay --start 2026-10-01` | Quick test: replays the daily paper run day by day up to today in a separate `replay/` folder (baseline + NIFTYBEES only, no AI cost), with each day seeing only data up to that day. Prints a trades table and the final book values |
+| `nsebot replay --start 2026-10-01` | Quick test: replays the daily paper run day by day up to today in a separate `replay/` folder (v1, NIFTYBEES, v2a and v2b books; no AI cost; `--no-v2` for v1 only), with each day seeing only data up to that day. Prints a trades table and the final book values |
 | `nsebot report-weekly` | Weekly comparison from the paper logs |
 | `nsebot crosscheck` | Compares Yahoo returns with NSE's own data (jugaad-data) |
 | `nsebot datacheck` | Split/bonus and bad-bar audit for every symbol, written to `reports_out/data_check.md` |
@@ -162,6 +162,12 @@ Each period is an independent run starting with fresh ₹1,00,000. All figures a
 - **Signals and mark-to-market** use the cleaned series. The spike filter is *causal*: whether a bar is kept depends only on that bar and earlier ones, and a test checks this.
 - **Fills and stop checks** use the **raw** open and low. A real crash is detected on the day it happens (even while the spike filter is holding that bar out) and sold at the next raw open.
 - **Trade-off:** a data glitch in the raw feed could cause a fake stop-out. `nsebot crosscheck` is the guard against that.
+
+### v2 books in the daily run
+
+- The v2a and v2b books trade the point-in-time Nifty 50, with corrected prices for current members and anything held, loaded up to the run date only. Their state lives in the same `state/portfolio.json`.
+- **Keep `nse_holidays` in `config.yaml` up to date** from NSE's published holiday calendar. In live paper mode tomorrow's bar doesn't exist yet, so v2b uses this list to recognise the last session of a month. If a month end is missed, v2b rebalances one session late and logs a warning.
+- **Small-capital limit:** with ₹1L, a v2b slot is about ₹10,000, so a stock priced above that per share (e.g. Maruti at about ₹14,450) gets 0 shares and is never bought. This comes from whole-share sizing, not from a rule change.
 
 ### Strategy freeze
 

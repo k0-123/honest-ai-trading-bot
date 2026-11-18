@@ -81,6 +81,9 @@ class Config(BaseModel):
     llm: LlmCfg = LlmCfg()
     backtest: BacktestCfg = BacktestCfg()
     paths: PathsCfg = PathsCfg()
+    # Weekday NSE trading holidays (YYYY-MM-DD) from NSE's published calendar. Used only in live paper mode, where
+    # tomorrow's bar does not exist yet, to find the last session of a month (v2b rebalance). Keep it up to date.
+    nse_holidays: list[str] = []
 
     @field_validator("symbols")
     @classmethod

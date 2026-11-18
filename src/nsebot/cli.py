@@ -50,7 +50,13 @@ def cmd_daily(cfg: Config, args) -> int:
     from nsebot.paper.runner import PaperRunner
     from nsebot.reports.daily import write_daily_report
     from nsebot.reports.weekly import write_weekly_report
-    runner = PaperRunner(cfg, _loader(cfg), _strategies(cfg, with_llm=not args.no_llm))
+    kw = {}
+    if not args.no_v2:
+        from nsebot.paper.books import v2_universe_books
+        from nsebot.universe.nifty50 import Nifty50Universe
+        uni = Nifty50Universe()
+        kw = {"universe": uni, "universe_loader": _universe_loader(cfg), "universe_books": v2_universe_books(cfg, uni)}
+    runner = PaperRunner(cfg, _loader(cfg), _strategies(cfg, with_llm=not args.no_llm), **kw)
     res = runner.run()
     print(res.message)
     path = write_daily_report(res, cfg.paths.reports_dir)
@@ -283,8 +289,14 @@ def cmd_datacheck(cfg: Config, args) -> int:
 def cmd_replay(cfg: Config, args) -> int:
     from nsebot.paper.replay import render, replay
     from nsebot.reports.daily import write_daily_report
+    kw = {}
+    if not args.no_v2:
+        from nsebot.paper.books import v2_universe_books
+        from nsebot.universe.nifty50 import Nifty50Universe
+        uni = Nifty50Universe()
+        kw = {"universe": uni, "universe_loader": _universe_loader(cfg), "universe_books": v2_universe_books(cfg, uni)}
     res = replay(cfg, _loader(cfg), args.start, args.end, args.out,
-                 report_fn=lambda r, d: write_daily_report(r, d))
+                 report_fn=lambda r, d: write_daily_report(r, d), **kw)
     text = render(res, cfg.capital)
     (res.out_dir / "replay_summary.md").write_text(text, encoding="utf-8")
     print(text)
@@ -317,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("daily", help="run after market close (16:30 IST)")
     d.add_argument("--no-llm", action="store_true")
+    d.add_argument("--no-v2", action="store_true", help="skip the v2a/v2b universe books")
     d.add_argument("--weekly", action="store_true", help="also write the weekly report")
     b = sub.add_parser("backtest")
     b.add_argument("--start")
@@ -333,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--start", default="2026-10-01")
     rp.add_argument("--end", help="default: today")
     rp.add_argument("--out", default="replay", help="separate folder (never the real state dir)")
+    rp.add_argument("--no-v2", action="store_true", help="skip the v2a/v2b universe books")
     r = sub.add_parser("reset-halt")
     r.add_argument("--book", required=True)
     r.add_argument("--confirm", action="store_true")
